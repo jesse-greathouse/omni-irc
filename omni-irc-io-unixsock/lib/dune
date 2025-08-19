@@ -1,0 +1,4 @@
+(library
+ (name irc_io_unixsock)
+ (public_name omni-irc-io-unixsock)
+ (libraries lwt.unix omni-irc-sig))

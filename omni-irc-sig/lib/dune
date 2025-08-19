@@ -1,0 +1,5 @@
+(library
+ (name irc_sig)
+ (public_name omni-irc-sig)
+ (libraries lwt)
+ (modules_without_implementation io))

@@ -1,0 +1,4 @@
+(library
+ (name irc_conn)
+ (public_name omni-irc-conn)
+ (libraries lwt omni-irc-sig))
