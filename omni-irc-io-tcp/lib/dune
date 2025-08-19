@@ -1,0 +1,4 @@
+(library
+ (name irc_io_tcp)
+ (public_name omni-irc-conn.tcp.io)
+ (libraries lwt.unix omni-irc-sig))

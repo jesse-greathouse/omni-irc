@@ -3,7 +3,10 @@
     as a duplex byte stream (no IRC framing, no parsing).
 *)
 
-module IO : Irc_sig.Io.S
+module IO : sig
+  include Irc_sig.Io.S with type endpoint = string
+  (** [endpoint] is the socket path. *)
+end
 
 type server
 val serve_once :

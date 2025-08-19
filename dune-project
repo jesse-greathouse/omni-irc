@@ -11,7 +11,7 @@
 (package
  (name omni-irc-conn)
  (synopsis "Omni IRC: transport connector (functor over IO)")
- (depends lwt))
+ (depends lwt omni-irc-sig))
 
 (package
  (name omni-irc-io-unixsock)
@@ -31,4 +31,4 @@
 (package
  (name omni-irc-client)
  (synopsis "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")
- (depends lwt omni-irc-io-unixsock))
+ (depends lwt omni-irc-io-unixsock omni-irc-conn))

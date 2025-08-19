@@ -5,6 +5,7 @@ depends: [
   "dune" {>= "3.11"}
   "lwt"
   "omni-irc-io-unixsock"
+  "omni-irc-conn"
   "odoc" {with-doc}
 ]
 build: [

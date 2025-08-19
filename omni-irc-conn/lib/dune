@@ -1,4 +1,11 @@
 (library
- (name irc_conn)
- (public_name omni-irc-conn)
- (libraries lwt omni-irc-sig))
+  (name irc_conn)
+  (public_name omni-irc-conn)
+  (modules connector)
+  (libraries lwt omni-irc-sig))
+
+(library
+  (name irc_conn_tcp)
+  (public_name omni-irc-conn.tcp)
+  (modules connector_tcp)
+  (libraries lwt omni-irc-sig omni-irc-conn omni-irc-conn.tcp.io))

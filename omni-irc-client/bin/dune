@@ -1,5 +1,9 @@
 (executable
- (name main)
- (public_name omni-irc-client)
- (package omni-irc-client)
- (libraries lwt.unix omni-irc-io-unixsock))
+  (name main)
+  (public_name omni-irc-client)
+  (package omni-irc-client)
+  (libraries
+    lwt.unix
+    omni-irc-io-unixsock
+    omni-irc-conn.tcp.io
+    omni-irc-conn.tcp))

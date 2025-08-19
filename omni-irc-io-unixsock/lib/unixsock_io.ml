@@ -1,8 +1,13 @@
 open Lwt.Infix
 
 (* Expose the concrete [t] so callers can pass a [Lwt_unix.file_descr] as [IO.t]. *)
-module IO : Irc_sig.Io.S with type t = Lwt_unix.file_descr = struct
+module IO : Irc_sig.Io.S with type t = Lwt_unix.file_descr and type endpoint = string = struct
   type t = Lwt_unix.file_descr
+  type endpoint = string  (* socket path *)
+
+  let connect (path : endpoint) =
+    let fd = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+    Lwt_unix.connect fd (Unix.ADDR_UNIX path) >|= fun () -> fd
 
   let recv fd buf =
     Lwt_unix.read fd buf 0 (Bytes.length buf)

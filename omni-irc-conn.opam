@@ -4,6 +4,7 @@ synopsis: "Omni IRC: transport connector (functor over IO)"
 depends: [
   "dune" {>= "3.11"}
   "lwt"
+  "omni-irc-sig"
   "odoc" {with-doc}
 ]
 build: [

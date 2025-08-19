@@ -1,5 +1,16 @@
 open Lwt.Infix
 
+(* AF_UNIX side for the local UI attachment *)
+module U   = Irc_io_unixsock.Unixsock_io
+module UIO = U.IO
+
+(* TCP dialer via connector: Tcp IO + connector adapter *)
+module Tcp = struct
+  module Endpoint = Irc_io_tcp.Tcp_io.Endpoint
+  module IO       = Irc_io_tcp.Tcp_io.IO
+end
+module Conn = Irc_conn_tcp.Connector_tcp.Make(Tcp)
+
 (* CLI *)
 let () =
   let server   = ref "" in
@@ -29,57 +40,53 @@ let () =
   if !server = "" then missing "--server" ();
   if !port <= 0 then missing "--port" ();
 
-  let module U  = Irc_io_unixsock.Unixsock_io in
-  let module IO = U.IO in
-
-  (* Resolve and connect TCP to IRC *)
-  let connect_tcp host port =
-    let open Unix in
-    let hints = [ AI_FAMILY PF_INET; AI_SOCKTYPE SOCK_STREAM ] in
-    Lwt_unix.getaddrinfo host (string_of_int port) hints >>= function
-    | [] -> Lwt.fail_with ("no addrinfo for " ^ host)
-    | ai :: _ ->
-      let fd = Lwt_unix.socket ai.ai_family ai.ai_socktype ai.ai_protocol in
-      Lwt_unix.connect fd ai.ai_addr >|= fun () -> fd
-  in
-
-  (* Pipes bridging AF_UNIX IO <-> TCP fd *)
-  let rec pipe_io_to_fd ~(src : IO.t) ~(dst : Lwt_unix.file_descr) =
+  (* Pipes bridging AF_UNIX IO <-> TCP fd (Tcp.IO.t = Lwt_unix.file_descr) *)
+  let rec pipe_ui_to_tcp ~(src : UIO.t) ~(dst : Tcp.IO.t) =
     let buf = Bytes.create 4096 in
-    IO.recv src buf >>= function
+    UIO.recv src buf >>= function
     | 0 -> Lwt_io.eprintf "[pipe] unix->tcp EOF\n%!"
     | n ->
       Lwt_io.eprintf "[pipe] unix->tcp %d bytes\n%!" n >>= fun () ->
-      Lwt_unix.write dst buf 0 n >>= fun _ ->
-      pipe_io_to_fd ~src ~dst
+      Tcp.IO.send dst ~off:0 ~len:n buf >>= fun _ ->
+      pipe_ui_to_tcp ~src ~dst
   in
 
-  let rec pipe_fd_to_io ~(src : Lwt_unix.file_descr) ~(dst : IO.t) =
+  let rec pipe_tcp_to_ui ~(src : Tcp.IO.t) ~(dst : UIO.t) =
     let buf = Bytes.create 4096 in
-    Lwt_unix.read src buf 0 4096 >>= function
+    Tcp.IO.recv src buf >>= function
     | 0 -> Lwt_io.eprintf "[pipe] tcp->unix EOF\n%!"
     | n ->
       Lwt_io.eprintf "[pipe] tcp->unix %d bytes\n%!" n >>= fun () ->
-      IO.send dst ~off:0 ~len:n buf >>= fun _ ->
-      pipe_fd_to_io ~src ~dst
+      UIO.send dst ~off:0 ~len:n buf >>= fun _ ->
+      pipe_tcp_to_ui ~src ~dst
   in
 
-  (* Once a single AF_UNIX client attaches, bridge it to the TCP connection *)
-  let handler (cfd : IO.t) =
-    Lwt_io.eprintf "[client] AF_UNIX client attached; connecting TCP %s:%d...\n%!"
-      !server !port
+  (* Once a single AF_UNIX client attaches, bridge it to a TCP connection *)
+  let handler (cfd : UIO.t) =
+    let cfg : Conn.cfg = {
+      host      = !server;
+      port      = !port;
+      username  = None;
+      password  = None;
+      realname  = None;
+      charset   = None;
+      tls       = false;     (* flip to true when TLS is implemented in IO *)
+      keepalive = false;     (* future: use in a higher layer for PINGs *)
+    } in
+    Lwt_io.eprintf "[client] AF_UNIX client attached; dialing %s:%d via connector...\n%!"
+      cfg.host cfg.port
     >>= fun () ->
-    connect_tcp !server !port >>= fun tfd ->
+    Conn.connect cfg >>= fun tconn ->
     Lwt_io.eprintf "[client] TCP connected.\n%!" >>= fun () ->
     Lwt.finalize
       (fun () ->
         Lwt.pick [
-          pipe_io_to_fd ~src:cfd ~dst:tfd;
-          pipe_fd_to_io ~src:tfd ~dst:cfd;
+          pipe_ui_to_tcp ~src:cfd ~dst:tconn;
+          pipe_tcp_to_ui ~src:tconn ~dst:cfd;
         ])
       (fun () ->
-        Lwt_io.eprintf "[client] closing TCP fd\n%!" >>= fun () ->
-        Lwt.catch (fun () -> Lwt_unix.close tfd) (fun _ -> Lwt.return_unit))
+        Lwt_io.eprintf "[client] closing TCP connection\n%!" >>= fun () ->
+        Lwt.catch (fun () -> Conn.close tconn) (fun _ -> Lwt.return_unit))
   in
 
   (* Optionally spawn the UI with OMNI_IRC_SOCKET exported *)
@@ -100,7 +107,8 @@ let () =
   Lwt_main.run begin
     U.serve_once ~path:!socket ~perms:0o600 handler >>= fun srv ->
     spawn_ui_if_requested () >>= fun () ->
-    Lwt_io.printf "[client] socket: %s  ->  TCP %s:%d\n%!" !socket !server !port
+    Lwt_io.printf "[client] socket: %s  ->  TCP %s:%d (via connector)\n%!"
+      !socket !server !port
     >>= fun () ->
     (* Wait for the accept/bridge to finish (client quits or connection closes) *)
     U.wait srv
