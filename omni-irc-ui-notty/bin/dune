@@ -1,5 +1,0 @@
-(executable
- (name main)
- (public_name omni-irc-tui)
- (package omni-irc-tui)
- (libraries lwt notty notty.unix notty.lwt omni-irc-ui-notty))

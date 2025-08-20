@@ -1,6 +1,9 @@
 (lang dune 3.11)
+
 (name omni_irc)
+
 (generate_opam_files true)
+
 (implicit_transitive_deps true)
 
 (package
@@ -24,11 +27,12 @@
  (depends lwt notty))
 
 (package
- (name omni-irc-tui)
- (synopsis "Omni IRC: demo TUI executable (Notty-Lwt)")
- (depends lwt notty))
+ (name omni-irc-ui)
+ (synopsis "Omni IRC: contracts for UI modules")
+ (depends lwt))
 
 (package
  (name omni-irc-client)
- (synopsis "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")
+ (synopsis
+  "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")
  (depends lwt omni-irc-io-unixsock omni-irc-conn))

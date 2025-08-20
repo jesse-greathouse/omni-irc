@@ -4,11 +4,11 @@ module Make (IO : Irc_sig.Io.S) = struct
   type cfg = {
     host : string;
     port : int;
-    username  : string option;
-    password  : string option;
-    realname  : string option;
-    charset   : string option;
-    tls       : bool;
+    username : string option;
+    password : string option;
+    realname : string option;
+    charset : string option;
+    tls : bool;
     keepalive : bool;
   }
 
@@ -20,7 +20,7 @@ module Make (IO : Irc_sig.Io.S) = struct
       to expose an endpoint constructor in its mli (e.g. Tcp_io.Endpoint.make). *)
     Lwt.fail_with "omni-irc-conn: connect requires a concrete IO with an endpoint constructor"
 
-  let recv  (c:conn) (buf:bytes)   = IO.recv c buf
-  let send  (c:conn) ?off ?len b   = IO.send c ?off ?len b
-  let close (c:conn)               = IO.close c
+  let recv (c : conn) (buf : bytes) = IO.recv c buf
+  let send (c : conn) ?off ?len b = IO.send c ?off ?len b
+  let close (c : conn) = IO.close c
 end
