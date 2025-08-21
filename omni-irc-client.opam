@@ -2,10 +2,14 @@
 opam-version: "2.0"
 synopsis: "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)"
 depends: [
-  "dune" {>= "3.11"}
+  "dune" {>= "3.20"}
   "lwt"
-  "omni-irc-io-unixsock"
+  "omni-irc-sig"
   "omni-irc-conn"
+  "omni-irc-io-unixsock"
+  "omni-irc-io-tcp"
+  "omni-irc-ui"
+  "omni-irc-ui-notty"
   "odoc" {with-doc}
 ]
 build: [
@@ -22,3 +26,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
+x-maintenance-intent: ["(latest)"]

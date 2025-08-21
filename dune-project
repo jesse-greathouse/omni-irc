@@ -1,4 +1,4 @@
-(lang dune 3.11)
+(lang dune 3.20)
 
 (name omni_irc)
 
@@ -12,6 +12,11 @@
  (depends lwt))
 
 (package
+ (name omni-irc-io-tcp)
+ (synopsis "Omni IRC: TCP IO (future TLS)")
+ (depends lwt omni-irc-sig))
+
+(package
  (name omni-irc-conn)
  (synopsis "Omni IRC: transport connector (functor over IO)")
  (depends lwt omni-irc-sig))
@@ -19,12 +24,12 @@
 (package
  (name omni-irc-io-unixsock)
  (synopsis "Omni IRC: single-consumer AF_UNIX bridge")
- (depends lwt))
+ (depends lwt omni-irc-sig))
 
 (package
  (name omni-irc-ui-notty)
  (synopsis "Omni IRC: Notty-Lwt TUI")
- (depends lwt notty))
+ (depends lwt notty omni-irc-ui))
 
 (package
  (name omni-irc-ui)
@@ -35,4 +40,11 @@
  (name omni-irc-client)
  (synopsis
   "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")
- (depends lwt omni-irc-io-unixsock omni-irc-conn))
+ (depends
+  lwt
+  omni-irc-sig
+  omni-irc-conn
+  omni-irc-io-unixsock
+  omni-irc-io-tcp
+  omni-irc-ui
+  omni-irc-ui-notty))

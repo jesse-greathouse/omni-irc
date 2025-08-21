@@ -5,6 +5,8 @@ use Getopt::Long;
 use File::Find;
 use File::Spec;
 
+binmode(STDOUT, ":encoding(UTF-8)");
+
 # Command-line options
 my ($mask, $path, $summary, $include_hidden, $help, $verbose) = (undef, '.', 0, 0, 0, 0);
 
@@ -25,7 +27,7 @@ $path = shift @ARGV // '.';
 # Compile exclusion patterns
 my @excluded_dirs = map { qr/$_/ } (
     '^\.\/opt$', '^\.\/web$', '^\.\/var$', '^\.\/tmp$', '\.git$', '\.idea$', '\.vscode$',
-    'node_modules$', 'vendor$', 'certs?$', 'ssl$',
+    '\.dist$', '_build$', 'node_modules$', 'vendor$', 'certs?$', 'ssl$',
     '^\.\/src\/lua\/agentzh$', '^\.\/etc\/ssl\/certs$', '^\.\/etc\/ssl\/private$', '^\.\/etc\/ssl\/CA$',
     '^\.\/supervisor$'
 );

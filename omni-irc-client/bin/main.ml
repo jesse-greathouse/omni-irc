@@ -9,16 +9,17 @@ end
 module Conn = Irc_conn_tcp.Connector_tcp.Make (Tcp)
 
 module UIX = Irc_ui.Ui_intf
-
-(* Add a runtime selector that returns a first-class module implementing Ui_intf.S *)
-let select_ui (name : string) : (module UIX.S) =
-  match String.lowercase_ascii name with
-  | "notty" -> (module Irc_ui_notty.Ui : UIX.S)
-  (* Future adapters:
-     | "stdio" -> (module Irc_ui_stdio.Ui : UIX.S) *)
-  | _ ->
-      prerr_endline ("Unknown UI '" ^ name ^ "'. Try: notty");
-      exit 2
+(* Inline UI selector; default to Notty when omitted/empty. *)
+let select_ui (name_opt : string option) : (module UIX.S) =
+  match name_opt with
+  | None | Some "" -> (module Irc_ui_notty.Ui : UIX.S)
+  | Some name ->
+      begin match String.lowercase_ascii name with
+      | "notty" -> (module Irc_ui_notty.Ui : UIX.S)
+      | _ ->
+          prerr_endline ("Unknown UI '" ^ name ^ "'. Try: notty");
+          exit 2
+      end
 
 let () =
   (* CLI *)
@@ -26,7 +27,7 @@ let () =
   let port = ref 0 in
   let nick = ref "" in
   let realname = ref "" in
-  let ui_name = ref "notty" in
+  let ui_name = ref "" in
 
   let specl =
     [
@@ -34,7 +35,7 @@ let () =
       ("--port", Arg.Set_int port, "IRC server port (required)");
       ("--nick", Arg.Set_string nick, "IRC nickname (unused for now)");
       ("--realname", Arg.Set_string realname, "IRC realname (unused for now)");
-      ("--ui", Arg.Set_string ui_name, "UI adapter (default: notty)");
+      ("--ui", Arg.Set_string ui_name, "UI adapter (default if omitted: notty)");
     ]
   in
   let usage =
@@ -68,7 +69,8 @@ let () =
     let ui_to_client msg  = Lwt_mvar.put to_client_m msg in
 
     (* Start UI *)
-    let (module UIM : UIX.S) = select_ui !ui_name in
+    let ui_opt = if !ui_name = "" then None else Some !ui_name in
+    let (module UIM : UIX.S) = select_ui ui_opt in
     let ui = UIM.create () in
     let ui_task =
       UIM.run ui ~from_client:ui_from_client ~to_client:ui_to_client
@@ -78,11 +80,11 @@ let () =
     (* Start NET *)
     let net_task =
       Conn.connect cfg >>= fun tconn ->
-      Lwt_io.eprintf "[client] TCP connected.\n%!" >>= fun () ->
+      Lwt_io.eprintf "[client] connected.\n%!" >>= fun () ->
 
       let rec rx_loop () =
         let buf = Bytes.create 4096 in
-        Tcp.IO.recv tconn buf >>= function
+        Conn.recv tconn buf >>= function
         | 0 ->
             Lwt_mvar.put from_client_m UIX.ClientClosed
         | n ->
@@ -93,7 +95,7 @@ let () =
       let rec tx_loop () =
         Lwt_mvar.take to_client_m >>= function
         | UIX.UiSendRaw b ->
-            Tcp.IO.send tconn ~off:0 ~len:(Bytes.length b) b >>= fun _ -> tx_loop ()
+            Conn.send tconn ~off:0 ~len:(Bytes.length b) b >>= fun _ -> tx_loop ()
         | UIX.UiQuit ->
             Lwt.return_unit
       in

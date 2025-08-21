@@ -8,4 +8,4 @@
  (name irc_conn_tcp)
  (public_name omni-irc-conn.tcp)
  (modules connector_tcp)
- (libraries lwt omni-irc-sig omni-irc-conn omni-irc-conn.tcp.io))
+ (libraries lwt omni-irc-sig omni-irc-conn omni-irc-io-tcp))
