@@ -1,5 +1,5 @@
 (library
  (name irc_conn)
  (public_name omni-irc-conn)
- (modules connector)
+ (modules_without_implementation connector_intf)
  (libraries lwt omni-irc-sig))
