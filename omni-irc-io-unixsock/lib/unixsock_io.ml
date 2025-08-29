@@ -1,3 +1,4 @@
+(* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 open Lwt.Infix
 
 (* Expose the concrete [t] so callers can pass a [Lwt_unix.file_descr] as [IO.t]. *)

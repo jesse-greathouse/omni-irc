@@ -1,0 +1,12 @@
+(library
+ (name irc_io_tls)
+ (public_name omni-irc-io-tls)
+ (modules tls_io)
+ (libraries
+  lwt.unix
+  tls-lwt
+  x509
+  ca-certs
+  domain-name
+  cstruct
+  omni-irc-sig))

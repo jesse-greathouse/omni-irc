@@ -1,26 +1,32 @@
-module Make (IO : Irc_sig.Io.S) = struct
-  type conn = IO.t
+(* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
+module type DIAL = sig
+  module Endpoint : sig
+    type t
+    val make : host:string -> port:int -> t
+  end
+  module IO : sig
+    include Irc_sig.Io.S with type endpoint = Endpoint.t
+  end
+end
+
+module Make (D : DIAL) = struct
+  type conn = D.IO.t
 
   type cfg = {
-    host : string;
-    port : int;
-    username : string option;
-    password : string option;
-    realname : string option;
-    charset : string option;
-    tls : bool;
+    host      : string;
+    port      : int;
+    username  : string option;
+    password  : string option;
+    realname  : string option;
+    charset   : string option;
     keepalive : bool;
   }
 
-  (* Map our cfg to the IO endpoint. This relies on the concrete IO’s endpoint type.
-     For TCP we’ll define an endpoint record below; for other IOs you’ll adapt accordingly. *)
-  let connect (_cfg : cfg) : conn Lwt.t =
-    (* The functor can’t manufacture an endpoint unless the chosen IO’s endpoint
-      is compatible with (host,port, tls, …). We therefore expect the concrete IO
-      to expose an endpoint constructor in its mli (e.g. Tcp_io.Endpoint.make). *)
-    Lwt.fail_with "omni-irc-conn: connect requires a concrete IO with an endpoint constructor"
+  let connect (cfg : cfg) : conn Lwt.t =
+    let ep = D.Endpoint.make ~host:cfg.host ~port:cfg.port in
+    D.IO.connect ep
 
-  let recv (c : conn) (buf : bytes) = IO.recv c buf
-  let send (c : conn) ?off ?len b = IO.send c ?off ?len b
-  let close (c : conn) = IO.close c
+  let recv  = D.IO.recv
+  let send  = D.IO.send
+  let close = D.IO.close
 end

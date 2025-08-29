@@ -6,6 +6,14 @@
 
 (implicit_transitive_deps true)
 
+(maintainers "Jesse Greathouse <jesse.greathouse@gmail.com>")
+(authors "Jesse Greathouse")
+(homepage "https://github.com/jessegreathouse/omni-irc")
+(bug_reports "https://github.com/jessegreathouse/omni-irc/issues")
+(source (github jessegreathouse/omni-irc))
+(documentation "https://github.com/jessegreathouse/omni-irc#readme")
+(license "LicenseRef-OmniIRC-ViewOnly-1.0")
+
 (package
  (name omni-irc-sig)
  (synopsis "Omni IRC: tiny IO signature")
@@ -13,8 +21,20 @@
 
 (package
  (name omni-irc-io-tcp)
- (synopsis "Omni IRC: TCP IO (future TLS)")
+ (synopsis "Omni IRC: TCP IO")
  (depends lwt omni-irc-sig))
+
+(package
+ (name omni-irc-io-tls)
+ (synopsis "Omni IRC: TLS IO")
+ (depends
+  lwt
+  tls-lwt
+  x509
+  ca-certs
+  domain-name
+  cstruct
+  omni-irc-sig))
 
 (package
  (name omni-irc-conn)

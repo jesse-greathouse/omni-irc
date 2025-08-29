@@ -1,3 +1,4 @@
+(* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 open Lwt.Infix
 
 module Endpoint = struct

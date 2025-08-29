@@ -1,5 +1,4 @@
-(** Omni IO tiny signature (duplex byte stream with constructor) *)
-
+(* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 module type S = sig
   type t
 

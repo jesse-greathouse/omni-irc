@@ -1,6 +1,4 @@
-(** Minimal UI contract used by the client (single-process adapter).
-    The UI exchanges control/data messages with the client explicitly. *)
-
+(* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 type to_client =
   | UiSendRaw of bytes        (** user typed a line; send verbatim to IRC *)
   | UiQuit                    (** user requested quit *)

@@ -1,5 +1,4 @@
-(** TCP IO (optionally future-TLS) for Omni IRC. *)
-
+(* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 module Endpoint : sig
   type t = { host : string; port : int; tls : bool (* room for SNI, ALPN, timeouts, etc. *) }
 

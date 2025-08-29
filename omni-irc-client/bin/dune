@@ -1,5 +1,3 @@
-; Single client linking all currently supported UIs (Notty today)
-
 (executable
  (name main)
  (public_name omni-irc-client)
@@ -7,8 +5,8 @@
  (modules main)
  (libraries
   lwt.unix
-  omni-irc-io-tcp
-  omni-irc-conn.tcp
   omni-irc-conn
+  omni-irc-io-tcp
+  omni-irc-io-tls
   irc_ui
   omni-irc-ui-notty))
