@@ -8,6 +8,7 @@ module type CLIENT = sig
   val quit     : t -> unit Lwt.t
 end
 
-module Make (C : CLIENT) : sig
+module Make (P : Parser_intf.S) (C : CLIENT) : sig
+  module Engine : module type of Engine.Make(P)
   val register_defaults : C.t Engine.t -> unit
 end

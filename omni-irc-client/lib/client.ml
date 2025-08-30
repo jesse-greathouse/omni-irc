@@ -1,10 +1,10 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 open Lwt.Infix
 
+module P      = Irc_engine.Parser
 module UIX    = Irc_ui.Ui_intf
 module Conn   = Irc_conn.Connector
-module Engine = Irc_engine.Engine
-module Event  = Irc_engine.Event
+module Engine = Irc_engine.Engine.Make(P)
 
 module type CONN = sig
   type conn
@@ -38,7 +38,7 @@ type t = {
   to_client_m   : UIX.to_client Lwt_mvar.t;
   from_client_m : UIX.from_client Lwt_mvar.t;
 
-  rx_buf     : Buffer.t;
+  acc        : Engine.Acc.t;  (* parser-owned accumulator via the engine *)
   opts       : opts;
   mutable running : bool;
 }
@@ -48,7 +48,7 @@ let create (c_mod : (module CONN)) (cfg : Conn.cfg) ~engine
   { cfg; engine; ui_mod; c_mod; c = None;
     to_client_m = Lwt_mvar.create_empty ();
     from_client_m = Lwt_mvar.create_empty ();
-    rx_buf = Buffer.create 8192; opts; running = false; }
+    acc = Engine.Acc.create (); opts; running = false; }
 
 let with_conn (t : t) (f : boxed -> 'r Lwt.t) : 'r Lwt.t =
   match t.c with
@@ -64,25 +64,6 @@ let send_raw t line =
 let join t ch = send_raw t (Printf.sprintf "JOIN %s\r\n" ch)
 let notify t s = Lwt_mvar.put t.from_client_m (UIX.ClientInfo s)
 let quit   t   = send_raw t "QUIT :bye\r\n"
-
-let flush_lines t =
-  let s = Buffer.contents t.rx_buf in
-  let parts = String.split_on_char '\n' s in
-  let rev = List.rev parts in
-  let last = match rev with [] -> "" | hd :: _ -> hd in
-  let complete = match rev with [] -> [] | _ :: tl -> List.rev tl in
-  Buffer.clear t.rx_buf; Buffer.add_string t.rx_buf last;
-  Lwt_list.iter_p
-    (fun l ->
-      let l =
-        if String.length l > 0 && l.[String.length l - 1] = '\r'
-        then String.sub l 0 (String.length l - 1) else l
-      in
-      Lwt_mvar.put t.from_client_m (UIX.ClientRxChunk (Bytes.of_string (l ^ "\n"))) >>= fun () ->
-      let ev = Irc_engine.Event.of_irc_line l in
-      Irc_engine.Engine.emit_async t.engine ev t;
-      Lwt.return_unit)
-    complete
 
 let start_ui t =
   let module UIM = (val t.ui_mod : UIX.S) in
@@ -110,8 +91,11 @@ let start_net t =
       C.recv conn buf >>= function
       | 0 -> Lwt_mvar.put t.from_client_m UIX.ClientClosed
       | n ->
-          Buffer.add_string t.rx_buf (Bytes.sub_string buf 0 n);
-          flush_lines t >>= rx_loop
+          let chunk = Bytes.sub_string buf 0 n in
+          (* Forward raw chunk to UI; it handles its own line reflow. *)
+          Lwt_mvar.put t.from_client_m (UIX.ClientRxChunk (Bytes.of_string chunk)) >>= fun () ->
+           (* Give the same chunk to the engine; it will parse → dispatch. *)
+          Engine.ingest_chunk t.engine t.acc chunk t >>= rx_loop
     in
     let rec tx_loop () =
       Lwt_mvar.take t.to_client_m >>= function

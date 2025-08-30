@@ -1,5 +1,10 @@
 (library
- (name irc_engine)
- (public_name omni-irc-engine)
- (libraries lwt)
- (modules event engine core))
+(name irc_engine)
+(public_name omni-irc-engine)
+(libraries lwt)
+(modules
+  parser_intf
+  parser
+  engine
+  core)
+(modules_without_implementation parser_intf))

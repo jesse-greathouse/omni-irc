@@ -1,8 +1,9 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 
+module P = Irc_engine.Parser
 module UIX = Irc_ui.Ui_intf
 module Conn = Irc_conn.Connector
-module Engine = Irc_engine.Engine
+module Engine : module type of Irc_engine.Engine.Make(P)
 
 module type CONN = sig
   type conn

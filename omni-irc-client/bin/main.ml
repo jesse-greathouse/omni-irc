@@ -1,11 +1,12 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 open Lwt.Infix
 
+module P          = Irc_engine.Parser
 module UIX        = Irc_ui.Ui_intf
 module Conn       = Irc_conn.Connector
 module type DIAL  = Conn.DIAL
-module Engine     = Irc_engine.Engine
-module Core       = Irc_engine.Core
+module Engine     = Irc_engine.Engine.Make(P)
+module Core       = Irc_engine.Core.Make(P)
 module Client     = Irc_client.Client
 
 (* TLS backend as a DIAL *)
@@ -97,11 +98,11 @@ let () =
     let ui_opt = if !ui_name = "" then None else Some !ui_name in
     let ui_mod = select_ui ui_opt in
 
-    (* Engine (context = Client.t) *)
-    let (eng : Client.t Irc_engine.Engine.t) = Irc_engine.Engine.create () in
+    (* Engine (context = Client.t), bound to the default Parser *)
+    let (eng : Client.t Engine.t) = Engine.create () in
 
     (* Core default handlers specialized to Client.t *)
-    let module Core_for_client = Irc_engine.Core.Make(struct
+    let module Core_for_client = Core(struct
         type t = Client.t
         let send_raw = Client.send_raw
         let join     = Client.join

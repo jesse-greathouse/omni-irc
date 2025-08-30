@@ -1,5 +1,4 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
-module E = Event
 
 module type CLIENT = sig
   type t
@@ -9,22 +8,24 @@ module type CLIENT = sig
   val quit     : t -> unit Lwt.t
 end
 
-module Make (C : CLIENT) = struct
-  let h_ping (ev : E.t) (c : C.t) =
-    match ev.payload with
-    | E.Ping { token } ->
+module Make (P : Parser_intf.S) (C : CLIENT) = struct
+  module Engine = Engine.Make(P)
+
+  let h_ping (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Ping { token } ->
         let tok = Option.value ~default:"" token in
         C.send_raw c (if tok = "" then "PONG\r\n" else Printf.sprintf "PONG :%s\r\n" tok)
     | _ -> Lwt.return_unit
 
-  let h_invite_join (ev : E.t) (c : C.t) =
-    match ev.payload with
-    | E.Invite { channel; _ } -> C.join c channel
+  let h_invite_join (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Invite { channel; _ } -> C.join c channel
     | _ -> Lwt.return_unit
 
-  let h_invite_notify (ev : E.t) (c : C.t) =
-    match ev.payload with
-    | E.Invite { channel; by } ->
+  let h_invite_notify (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Invite { channel; by } ->
         let who = Option.value ~default:"(unknown)" by in
         C.notify c (Printf.sprintf "You were invited by %s to join %s" who channel)
     | _ -> Lwt.return_unit
