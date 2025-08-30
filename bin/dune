@@ -1,0 +1,27 @@
+; Unix-like targets: bin/omni (with +x)
+(rule
+ (targets omni)
+ (enabled_if (<> %{ocaml-config:system} "win32"))
+ (deps %{exe:../omni-irc-client/bin/main.exe})
+ (action
+  (bash "cp %{exe:../omni-irc-client/bin/main.exe} %{targets} && chmod +x %{targets}"))
+ (mode (promote (until-clean))))
+
+; Windows target: bin/omni.exe (no chmod needed)
+(rule
+ (targets omni.exe)
+ (enabled_if (= %{ocaml-config:system} "win32"))
+ (deps %{exe:../omni-irc-client/bin/main.exe})
+ (action (copy %{exe:../omni-irc-client/bin/main.exe} %{targets}))
+ (mode (promote (until-clean))))
+
+; Convenience aliases
+(alias
+ (name omni)
+ (enabled_if (<> %{ocaml-config:system} "win32"))
+ (deps omni))
+
+(alias
+ (name omni)
+ (enabled_if (= %{ocaml-config:system} "win32"))
+ (deps omni.exe))

@@ -9,3 +9,5 @@
 *.bk
 *.log
 commit.txt
+omni-info.txt
+bin/omni
