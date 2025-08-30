@@ -2,9 +2,8 @@
 open Lwt.Infix
 
 module Endpoint = struct
-  type t = { host : string; port : int; tls : bool }
-
-  let make ~host ~port ~tls = { host; port; tls }
+  type t = { host : string; port : int }
+  let make ~host ~port = { host; port }
 end
 
 module IO : Irc_sig.Io.S with type endpoint = Endpoint.t and type t = Lwt_unix.file_descr = struct
@@ -18,11 +17,7 @@ module IO : Irc_sig.Io.S with type endpoint = Endpoint.t and type t = Lwt_unix.f
     | [] -> Lwt.fail_with ("omni-irc-io-tcp: no addrinfo for " ^ ep.host)
     | ai :: _ ->
         let fd = Lwt_unix.socket ai.ai_family ai.ai_socktype ai.ai_protocol in
-        Lwt_unix.connect fd ai.ai_addr >>= fun () ->
-        if ep.tls then
-          (* Placeholder: integrate tls-lwt here later. *)
-          Lwt.fail_with "omni-irc-io-tcp: TLS not implemented yet"
-        else Lwt.return fd
+        Lwt_unix.connect fd ai.ai_addr >|= fun () -> fd
 
   let recv fd buf = Lwt_unix.read fd buf 0 (Bytes.length buf)
 

@@ -1,9 +1,12 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 open Lwt.Infix
 
-module UIX = Irc_ui.Ui_intf
-module Conn = Irc_conn.Connector
-module type DIAL = Conn.DIAL
+module UIX        = Irc_ui.Ui_intf
+module Conn       = Irc_conn.Connector
+module type DIAL  = Conn.DIAL
+module Engine     = Irc_engine.Engine
+module Core       = Irc_engine.Core
+module Client     = Irc_client.Client
 
 (* TLS backend as a DIAL *)
 module Net_tls : DIAL = struct
@@ -28,7 +31,7 @@ module Net_tcp : DIAL = struct
     let connect (ep : endpoint) =
       let open Endpoint in
       let tcp_ep =
-        Irc_io_tcp.Tcp_io.Endpoint.make ~host:ep.host ~port:ep.port ~tls:false
+        Irc_io_tcp.Tcp_io.Endpoint.make ~host:ep.host ~port:ep.port
       in
       Base.connect tcp_ep
 
@@ -75,7 +78,6 @@ let () =
   if !port   <= 0 then missing "--port" ();
 
   Lwt_main.run begin
-    (* Choose NET backend at runtime, then instantiate the connector functor *)
     let (module Net : DIAL) =
       if !use_tls then (module Net_tls : DIAL) else (module Net_tcp : DIAL)
     in
@@ -86,67 +88,38 @@ let () =
       port = !port;
       username = None;
       password = None;
-      realname = None;
+      realname = (if !realname = "" then None else Some !realname);
       charset = None;
       keepalive = true;
     } in
 
-    (* In-process queues between UI and network *)
-    let to_client_m   : UIX.to_client Lwt_mvar.t   = Lwt_mvar.create_empty () in
-    let from_client_m : UIX.from_client Lwt_mvar.t = Lwt_mvar.create_empty () in
-
-    let ui_from_client () = Lwt_mvar.take from_client_m in
-    let ui_to_client msg  = Lwt_mvar.put to_client_m msg in
-
-    (* Start UI *)
+    (* Build a UI module value *)
     let ui_opt = if !ui_name = "" then None else Some !ui_name in
-    let (module UIM : UIX.S) = select_ui ui_opt in
-    let ui = UIM.create () in
-    let ui_task =
-      UIM.run ui ~from_client:ui_from_client ~to_client:ui_to_client
-      >>= fun () -> UIM.close ui
+    let ui_mod = select_ui ui_opt in
+
+    (* Engine (context = Client.t) *)
+    let (eng : Client.t Irc_engine.Engine.t) = Irc_engine.Engine.create () in
+
+    (* Core default handlers specialized to Client.t *)
+    let module Core_for_client = Irc_engine.Core.Make(struct
+        type t = Client.t
+        let send_raw = Client.send_raw
+        let join     = Client.join
+        let notify   = Client.notify
+        let quit     = Client.quit
+      end)
+    in Core_for_client.register_defaults eng;
+
+    let client =
+      Client.create
+        (module C)
+        cfg
+        ~engine:eng
+        ~ui:ui_mod
+        ~opts:{ Client.nick     = (if !nick = "" then None else Some !nick);
+          Client.realname = (if !realname = "" then None else Some !realname) }
     in
-
-    (* Start NET *)
-    let net_task =
-      C.connect cfg >>= fun tconn ->
-      Lwt_io.eprintf "[client] connected (%s).\n%!"
-        (if !use_tls then "TLS" else "TCP") >>= fun () ->
-
-      let send_line s =
-        C.send tconn ~off:0 ~len:(String.length s) (Bytes.of_string s) >>= fun _ ->
-        Lwt.return_unit
-      in
-
-      (* Optional initial handshake *)
-      (if !nick <> "" then send_line (Printf.sprintf "NICK %s\r\n" !nick) else Lwt.return_unit) >>= fun () ->
-      (if !realname <> "" then
-        let rn = if !nick = "" then "guest" else !nick in
-          send_line (Printf.sprintf "USER %s 0 * :%s\r\n" rn !realname)
-      else Lwt.return_unit) >>= fun () ->
-
-      let rec rx_loop () =
-        let buf = Bytes.create 4096 in
-        C.recv tconn buf >>= function
-        | 0 -> Lwt_mvar.put from_client_m UIX.ClientClosed
-        | n ->
-          Lwt_mvar.put from_client_m (UIX.ClientRxChunk (Bytes.sub buf 0 n)) >>= rx_loop
-      in
-
-      let rec tx_loop () =
-        Lwt_mvar.take to_client_m >>= function
-        | UIX.UiSendRaw b ->
-            C.send tconn ~off:0 ~len:(Bytes.length b) b >>= fun _ -> tx_loop ()
-        | UIX.UiQuit ->
-            Lwt.return_unit
-      in
-
-      Lwt.finalize
-        (fun () -> Lwt.pick [ rx_loop (); tx_loop () ])
-        (fun () ->
-          Lwt_io.eprintf "[client] closing connection\n%!" >>= fun () ->
-          Lwt.catch (fun () -> C.close tconn) (fun _ -> Lwt.return_unit))
-    in
-
-    Lwt.pick [ ui_task; net_task ]
+    Lwt_io.eprintf "[client] using %s\n%!"
+      (if !use_tls then "TLS transport" else "TCP transport") >>= fun () ->
+    Client.start client
   end

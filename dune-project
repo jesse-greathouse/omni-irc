@@ -57,6 +57,11 @@
  (depends lwt))
 
 (package
+ (name omni-irc-engine)
+ (synopsis "Omni IRC: event engine (dispatcher + core handlers)")
+ (depends lwt))
+
+(package
  (name omni-irc-client)
  (synopsis
   "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")

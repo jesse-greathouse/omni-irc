@@ -1,0 +1,8 @@
+(library
+ (name irc_client)
+ (public_name omni-irc-client.lib)
+ (libraries
+   lwt.unix
+   omni-irc-conn
+   omni-irc-engine
+   irc_ui))

@@ -8,5 +8,7 @@
   omni-irc-conn
   omni-irc-io-tcp
   omni-irc-io-tls
+  omni-irc-engine
+  omni-irc-client.lib
   irc_ui
   omni-irc-ui-notty))
