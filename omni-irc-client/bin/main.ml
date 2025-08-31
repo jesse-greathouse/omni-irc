@@ -118,7 +118,8 @@ let () =
         ~engine:eng
         ~ui:ui_mod
         ~opts:{ Client.nick     = (if !nick = "" then None else Some !nick);
-          Client.realname = (if !realname = "" then None else Some !realname) }
+                Client.realname = (if !realname = "" then None else Some !realname) }
+        ()
     in
     Lwt_io.eprintf "[client] using %s\n%!"
       (if !use_tls then "TLS transport" else "TCP transport") >>= fun () ->

@@ -5,4 +5,11 @@
    lwt.unix
    omni-irc-conn
    omni-irc-engine
-   irc_ui))
+   irc_ui)
+ (modules
+   client
+   cmd_key
+   cmd_intf
+   cmd_core)
+ (modules_without_implementation
+   cmd_intf))

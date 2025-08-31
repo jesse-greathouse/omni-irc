@@ -1,7 +1,8 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 type to_client =
-  | UiSendRaw of bytes        (** user typed a line; send verbatim to IRC *)
-  | UiQuit                    (** user requested quit *)
+  | UiSendRaw of bytes
+  | UiCmd     of string * string list   (** key + args *)
+  | UiQuit               (** user requested quit *)
 
 type from_client =
   | ClientRxChunk of bytes    (** network bytes from IRC server *)
