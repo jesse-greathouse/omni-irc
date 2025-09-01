@@ -10,6 +10,8 @@
    client
    cmd_key
    cmd_intf
-   cmd_core)
+   cmd_core
+   model_user
+   model_channel)
  (modules_without_implementation
    cmd_intf))

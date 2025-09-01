@@ -63,13 +63,13 @@
 
 (package
  (name omni-irc-client)
- (synopsis
-  "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")
+ (synopsis "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")
  (depends
   lwt
   omni-irc-sig
   omni-irc-conn
   omni-irc-io-unixsock
   omni-irc-io-tcp
+  omni-irc-io-tls
   omni-irc-ui
   omni-irc-ui-notty))

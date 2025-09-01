@@ -6,6 +6,9 @@ module UIX    = Irc_ui.Ui_intf
 module Conn   = Irc_conn.Connector
 module Engine = Irc_engine.Engine.Make(P)
 
+module User    = Model_user
+module Channel = Model_channel
+
 module type CONN = sig
   type conn
   val connect : Conn.cfg -> conn Lwt.t
@@ -27,24 +30,27 @@ type opts = { nick : string option; realname : string option }
 type boxed =
   | B : (module CONN with type conn = 'c) * 'c -> boxed
 
+module SMap = Map.Make(String)
+
 type t = {
-  cfg           : Conn.cfg;
-  engine        : t Engine.t;
-  ui_mod        : (module UIX.S);
-  c_mod         : (module CONN);
-  mutable c     : boxed option;
-  to_client_m   : UIX.to_client Lwt_mvar.t;
-  from_client_m : UIX.from_client Lwt_mvar.t;
-  acc           : Engine.Acc.t;
-  opts          : opts;
-  mutable running : bool;
-  cmd_pack      : cmd_pack;
+  cfg               : Conn.cfg;
+  engine            : t Engine.t;
+  ui_mod            : (module UIX.S);
+  c_mod             : (module CONN);
+  mutable c         : boxed option;
+  to_client_m       : UIX.to_client Lwt_mvar.t;
+  from_client_m     : UIX.from_client Lwt_mvar.t;
+  acc               : Engine.Acc.t;
+  opts              : opts;
+  mutable running   : bool;
+  cmd_pack          : cmd_pack;
+  mutable channels  : Channel.t SMap.t;
 }
 and cmd_pack = Pack : (module CMD with type ctx = t and type t = 'a) * 'a -> cmd_pack
 
 type client_ctx = t
 
-(* re-export in the implementation so Client.Cmd_key works *)
+(* re-export so Client.Cmd_key works *)
 module Cmd_key = Cmd_key
 
 let with_conn (t : t) (f : boxed -> 'r Lwt.t) : 'r Lwt.t =
@@ -55,7 +61,30 @@ let send_raw t line =
     let len = String.length line in
     C.send conn ~off:0 ~len (Bytes.of_string line) >>= fun _ -> Lwt.return_unit)
 
-let join t ch = send_raw t (Printf.sprintf "JOIN %s\r\n" ch)
+(* ---- channels helpers ---- *)
+let channel_key_of s = Channel.key_of_name s
+
+let channel_find t name =
+  SMap.find_opt (channel_key_of name) t.channels
+
+let channel_ensure t name =
+  let k = channel_key_of name in
+  match SMap.find_opt k t.channels with
+  | Some ch -> ch
+  | None ->
+      let ch = Channel.make ~name:k in
+      t.channels <- SMap.add k ch t.channels;
+      ch
+
+let channel_upsert t name f =
+  let k = channel_key_of name in
+  let cur = match SMap.find_opt k t.channels with Some c -> c | None -> Channel.make ~name:k in
+  t.channels <- SMap.add k (f cur) t.channels
+
+let join t ch =
+  let _ = channel_ensure t ch in
+  send_raw t (Printf.sprintf "JOIN %s\r\n" (Channel.wire_of_name ch))
+
 let notify t s = Lwt_mvar.put t.from_client_m (UIX.ClientInfo s)
 let quit   t   = send_raw t "QUIT :bye\r\n"
 
@@ -86,6 +115,7 @@ let create (c_mod : (module CONN)) (cfg : Conn.cfg)
     acc = Engine.Acc.create ();
     opts; running = false;
     cmd_pack = (match cmd with Some p -> p | None -> default_cmd ());
+    channels = SMap.empty;
   }
 
 let start_ui t =
@@ -122,14 +152,13 @@ let start_net t =
     | UIX.UiSendRaw b ->
         C.send conn ~off:0 ~len:(Bytes.length b) b >>= fun _ -> tx_loop ()
     | UIX.UiCmd (key_str, args) ->
-        (* convert boundary string to typed key; never block IO loop *)
         let key = Cmd_key.of_string key_str in
         cmd_async t ~key ~args; tx_loop ()
     | UIX.UiQuit ->
         Lwt.return_unit
   in
   Lwt.finalize (fun () -> Lwt.pick [ rx_loop (); tx_loop () ])
-                (fun () -> Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
+               (fun () -> Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
 
 let start t =
   if t.running then Lwt.return_unit
@@ -142,3 +171,4 @@ let stop t =
   | None -> Lwt.return_unit
   | Some (B ((module C), conn)) ->
       Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit)
+ 

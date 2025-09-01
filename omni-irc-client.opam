@@ -14,6 +14,7 @@ depends: [
   "omni-irc-conn"
   "omni-irc-io-unixsock"
   "omni-irc-io-tcp"
+  "omni-irc-io-tls"
   "omni-irc-ui"
   "omni-irc-ui-notty"
   "odoc" {with-doc}

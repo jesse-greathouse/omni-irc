@@ -1,9 +1,14 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 
+(* Re-exports for convenience *)
 module P = Irc_engine.Parser
 module UIX = Irc_ui.Ui_intf
 module Conn = Irc_conn.Connector
 module Engine : module type of Irc_engine.Engine.Make(P)
+
+(** Re-export models for convenience. *)
+module User : module type of Model_user
+module Channel : module type of Model_channel
 
 module type CONN = sig
   type conn
@@ -52,6 +57,11 @@ val quit     : t -> unit Lwt.t
 
 val cmd       : t -> key:Cmd_key.t -> args:string list -> unit Lwt.t
 val cmd_async : t -> key:Cmd_key.t -> args:string list -> unit
+
+(** Channels model accessors *)
+val channel_find   : t -> string -> Channel.t option
+val channel_ensure : t -> string -> Channel.t
+val channel_upsert : t -> string -> (Channel.t -> Channel.t) -> unit
 
 (** Re-export for convenient call-sites: Client.Cmd_key.Join, etc. *)
 module Cmd_key : module type of Cmd_key

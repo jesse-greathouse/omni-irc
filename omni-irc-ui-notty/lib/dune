@@ -1,4 +1,5 @@
 (library
  (name irc_ui_notty)
  (public_name omni-irc-ui-notty)
- (libraries lwt notty notty.unix notty.lwt omni-irc-ui))
+ (libraries lwt notty notty.unix notty.lwt omni-irc-ui)
+ (flags :standard -warn-error +a-39))
