@@ -12,6 +12,7 @@
    cmd_intf
    cmd_core
    model_user
-   model_channel)
+   model_channel
+   model_channel_list)
  (modules_without_implementation
    cmd_intf))

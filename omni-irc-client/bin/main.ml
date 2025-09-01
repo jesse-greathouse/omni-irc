@@ -108,8 +108,15 @@ let () =
         let join     = Client.join
         let notify   = Client.notify
         let quit     = Client.quit
+        let chanlist_upsert c ~name ~num_users ~topic =
+          Client.channel_list_upsert c ~name ~num_users ~topic; Lwt.return_unit
+        let get_channels c =
+          Client.get_channels c >>= fun _ ->
+          Lwt.return_unit
+        let evict_user = Client.evict_user
       end)
-    in Core_for_client.register_defaults eng;
+    in
+    Core_for_client.register_defaults eng;
 
     let client =
       Client.create

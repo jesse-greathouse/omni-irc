@@ -5,6 +5,12 @@ module type CLIENT = sig
   val send_raw : t -> string -> unit Lwt.t
   val join     : t -> string -> unit Lwt.t
   val notify   : t -> string -> unit Lwt.t
+  val get_and_emit_channels :
+    t ->
+    ?filter:string ->
+    ?limit:int ->
+    unit ->
+    unit Lwt.t
 end
 
 module Make (C : CLIENT) : sig

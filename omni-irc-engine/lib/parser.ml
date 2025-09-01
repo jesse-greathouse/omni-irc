@@ -4,7 +4,12 @@ type payload =
   | Raw_line of string
   | Ping     of { token : string option }
   | Invite   of { channel : string; by : string option }
-  | Other    of string * string list
+  | Motd_end of { message : string option }     (* 376 *)
+  | List_item of { channel : string; num_users : int; topic : string option }  (* 322 *)
+  | Privmsg  of { from : string option; target : string; text : string }
+  | Quit     of { who : string option; message : string option }
+  | Kill     of { nick : string; reason : string option }
+  | Other    of string * string list * string option
 
 type event = { name : string; payload : payload }
 
@@ -21,6 +26,15 @@ let trim s =
 
 let of_line line =
   let line = trim line in
+  (* IRCv3 message tags: if the line begins with '@', strip the tag section up to the first space *)
+  let line =
+    if String.length line > 0 && line.[0] = '@' then
+      match String.index_opt line ' ' with
+      | Some i -> String.sub line (i + 1) (String.length line - i - 1)
+      | None   -> ""  (* tags with no rest: treat as empty *)
+    else
+      line
+  in
   if line = "" then { name = "RAW"; payload = Raw_line line } else
   (* Optional prefix *)
   let prefix, rest =
@@ -28,7 +42,7 @@ let of_line line =
       match String.index_opt line ' ' with
       | None   -> (Some (String.sub line 1 (String.length line - 1)), "")
       | Some i -> (Some (String.sub line 1 (i - 1)),
-                  String.sub line (i + 1) (String.length line - i - 1))
+                    String.sub line (i + 1) (String.length line - i - 1))
     else (None, line)
   in
   (* Command / params / trailing *)
@@ -69,8 +83,19 @@ let of_line line =
       { name = "INVITE"; payload = Invite { channel = ch; by = prefix } }
   | "INVITE", _nick :: _, Some ch ->
       { name = "INVITE"; payload = Invite { channel = ch; by = prefix } }
-  | cmd, ps, _ ->
-      { name = cmd; payload = Other (cmd, ps) }
+  | "376", _me :: _, msg ->
+      { name = "RPL_ENDOFMOTD"; payload = Motd_end { message = msg } }
+  | "322", _me :: ch :: users :: _, topic ->
+      let num_users = try int_of_string users with _ -> 0 in
+      { name = "RPL_LIST"; payload = List_item { channel = ch; num_users; topic } }
+  | "PRIVMSG", target :: _, Some text ->
+      { name = "PRIVMSG"; payload = Privmsg { from = prefix; target; text } }
+  | "QUIT", _, msg ->
+      { name = "QUIT"; payload = Quit { who = prefix; message = msg } }
+  | "KILL", nick :: _, reason ->
+      { name = "KILL"; payload = Kill { nick; reason } }
+  | cmd, ps, trailing ->
+      { name = cmd; payload = Other (cmd, ps, trailing) }
 
 module Acc = struct
   type t = { buf : Buffer.t }

@@ -3,6 +3,8 @@ module type CLIENT = sig
   val send_raw : t -> string -> unit Lwt.t
   val join     : t -> string -> unit Lwt.t
   val notify   : t -> string -> unit Lwt.t
+  val get_and_emit_channels :
+    t -> ?filter:string -> ?limit:int -> unit -> unit Lwt.t
 end
 
 module Make (C : CLIENT) = struct
@@ -33,12 +35,50 @@ module Make (C : CLIENT) = struct
       in
       C.send_raw c line
 
+    let do_nick (c:ctx) = function
+      | newnick :: _ ->
+          C.send_raw c (Printf.sprintf "NICK %s\r\n" newnick)
+      | [] ->
+          C.notify c "NICK requires a <newnick>"
+
+    let do_privmsg (c:ctx) = function
+      | target :: rest ->
+          let msg = String.concat " " rest in
+          if msg = "" then C.notify c "MSG requires a <target> and <message>"
+          else C.send_raw c (Printf.sprintf "PRIVMSG %s :%s\r\n" target msg)
+      | [] ->
+          C.notify c "MSG requires a <target> and <message>"
+
+    (* Time-gated LIST: defers to the client (which may reuse cached data). *)
+    let do_get_list (c:ctx) (args:string list) =
+      (* args: [filter] [limit]; "*" means unfiltered *)
+      let filter_opt =
+        match args with
+        | [] -> None
+        | a :: _ ->
+            let a = String.trim a in
+            if a = "" || a = "*" then None else Some a
+      in
+      let limit_opt =
+        match args with
+        | [] | [_] -> None
+        | _ :: b :: _ ->
+            (try
+                let n = int_of_string (String.trim b) in
+                if n > 0 then Some n else None
+                with _ -> None)
+      in
+      C.get_and_emit_channels c ?filter:filter_opt ?limit:limit_opt ()
+
     let dispatch _t (c:ctx) ~key ~args =
       let f =
         match key with
         | Cmd_key.Join      -> do_join
         | Cmd_key.Names     -> do_names
         | Cmd_key.Raw       -> do_raw
+        | Cmd_key.Nick      -> do_nick
+        | Cmd_key.Privmsg   -> do_privmsg
+        | Cmd_key.Get_list  -> do_get_list
         | Cmd_key.Custom _  -> (fun _ _ -> Lwt.return_unit)
       in
       Lwt.catch (fun () -> f c args) (fun _ -> Lwt.return_unit)

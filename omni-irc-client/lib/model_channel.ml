@@ -1,13 +1,13 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 
-module User = Model_user
+module StringSet = Set.Make(String)
 
 type t = {
-  name   : string;  (* normalized; no leading '#'/'&' *)
+  name   : string;
   topic  : string option;
-  users  : User.Set.t;
-  ops    : User.Set.t;
-  voices : User.Set.t;
+  users  : StringSet.t;
+  ops    : StringSet.t;
+  voices : StringSet.t;
 }
 
 let key_of_name (s : string) =
@@ -20,27 +20,34 @@ let key_of_name (s : string) =
   String.lowercase_ascii base
 
 let make ~name =
-  { name; topic = None; users = User.Set.empty; ops = User.Set.empty; voices = User.Set.empty }
+  { name; topic = None; users = StringSet.empty; ops = StringSet.empty; voices = StringSet.empty }
 
 let set_topic t topic = { t with topic }
 
-let add_user  t u = { t with users  = User.Set.add u t.users  }
-let add_op    t u = { t with ops    = User.Set.add u t.ops    }
-let add_voice t u = { t with voices = User.Set.add u t.voices }
+let add_user  t key = { t with users  = StringSet.add key t.users  }
+let add_op    t key = { t with ops    = StringSet.add key t.ops    }
+let add_voice t key = { t with voices = StringSet.add key t.voices }
 
 let remove_user t u =
   { t with
-    users  = User.Set.remove u t.users;
-    ops    = User.Set.remove u t.ops;
-    voices = User.Set.remove u t.voices;
+    users  = StringSet.remove u t.users;
+    ops    = StringSet.remove u t.ops;
+    voices = StringSet.remove u t.voices;
   }
 
-let remove_op    t u = { t with ops    = User.Set.remove u t.ops    }
-let remove_voice t u = { t with voices = User.Set.remove u t.voices }
+let remove_op    t u = { t with ops    = StringSet.remove u t.ops    }
+let remove_voice t u = { t with voices = StringSet.remove u t.voices }
 
-let has_user  t u = User.Set.mem u t.users
-let has_op    t u = User.Set.mem u t.ops
-let has_voice t u = User.Set.mem u t.voices
+let has_user  t u = StringSet.mem u t.users
+let has_op    t u = StringSet.mem u t.ops
+let has_voice t u = StringSet.mem u t.voices
+
+let remove_all t key =
+  { t with
+    users  = StringSet.remove key t.users;
+    ops    = StringSet.remove key t.ops;
+    voices = StringSet.remove key t.voices
+  }
 
 let wire_of_name s =
   if s = "" then s else

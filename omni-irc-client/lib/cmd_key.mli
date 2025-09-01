@@ -5,6 +5,9 @@ type t =
   | Join
   | Names
   | Raw
+  | Nick
+  | Privmsg
+  | Get_list
   | Custom of string  (** catch-all / extension point *)
 
 val of_string : string -> t

@@ -6,8 +6,9 @@ module UIX    = Irc_ui.Ui_intf
 module Conn   = Irc_conn.Connector
 module Engine = Irc_engine.Engine.Make(P)
 
-module User    = Model_user
-module Channel = Model_channel
+module User          = Model_user
+module Channel       = Model_channel
+module Channel_list  = Model_channel_list
 
 module type CONN = sig
   type conn
@@ -45,6 +46,11 @@ type t = {
   mutable running   : bool;
   cmd_pack          : cmd_pack;
   mutable channels  : Channel.t SMap.t;
+  mutable chanlist  : Channel_list.t;
+  mutable users     : User.t SMap.t;
+
+  (* time-gating for LIST *)
+  mutable last_list_refresh : float option;
 }
 and cmd_pack = Pack : (module CMD with type ctx = t and type t = 'a) * 'a -> cmd_pack
 
@@ -61,7 +67,7 @@ let send_raw t line =
     let len = String.length line in
     C.send conn ~off:0 ~len (Bytes.of_string line) >>= fun _ -> Lwt.return_unit)
 
-(* ---- channels helpers ---- *)
+(* channels helpers *)
 let channel_key_of s = Channel.key_of_name s
 
 let channel_find t name =
@@ -76,11 +82,6 @@ let channel_ensure t name =
       t.channels <- SMap.add k ch t.channels;
       ch
 
-let channel_upsert t name f =
-  let k = channel_key_of name in
-  let cur = match SMap.find_opt k t.channels with Some c -> c | None -> Channel.make ~name:k in
-  t.channels <- SMap.add k (f cur) t.channels
-
 let join t ch =
   let _ = channel_ensure t ch in
   send_raw t (Printf.sprintf "JOIN %s\r\n" (Channel.wire_of_name ch))
@@ -88,11 +89,94 @@ let join t ch =
 let notify t s = Lwt_mvar.put t.from_client_m (UIX.ClientInfo s)
 let quit   t   = send_raw t "QUIT :bye\r\n"
 
+(* Pretty print a channel list snapshot into the UI (one line per channel). *)
+let emit_channel_list_dump ?filter ?limit (t : t) : unit Lwt.t =
+  (* Open the module so record labels (name, num_users, topic) are in scope. *)
+  let open Channel_list in
+  let entries_all : entry list =
+    Map.bindings t.chanlist |> List.map snd
+    |> List.sort (fun a b -> Stdlib.compare b.num_users a.num_users)
+  in
+  let wire_name (e:entry) = wire_of_name e.name in
+  let lc s = String.lowercase_ascii s in
+  let contains ~needle ~haystack =
+    let needle = lc needle and haystack = lc haystack in
+    let n = String.length needle and h = String.length haystack in
+    if n = 0 then true else
+    let rec loop i =
+      if i + n > h then false
+      else if String.sub haystack i n = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+  in
+  let entries =
+    match filter with
+    | None -> entries_all
+    | Some f when f = "" || f = "*" -> entries_all
+    | Some f ->
+        List.filter (fun (e:entry) -> contains ~needle:f ~haystack:(wire_name e)) entries_all
+  in
+  let entries =
+    match limit with
+    | None -> entries
+    | Some n ->
+        let rec take k xs =
+          match k, xs with
+          | k, _ when k <= 0 -> []
+          | _, [] -> []
+          | k, x::tl -> x :: take (k-1) tl
+        in
+        take n entries
+  in
+  let max_name  =
+    List.fold_left (fun m (e:entry) -> max m (String.length (wire_name e))) 7 entries in
+  let max_users =
+    List.fold_left (fun m (e:entry) -> max m (String.length (string_of_int e.num_users))) 5 entries in
+  let header =
+    Printf.sprintf "%-*s  %*s  %s" max_name "Channel" max_users "Users" "Topic" in
+  let sep =
+    let n = max_name + 2 + max_users + 2 + 5 in
+    String.make n '-' in
+
+  let line_of (e:entry) =
+    let topic = match e.topic with Some s -> s | None -> "" in
+    Printf.sprintf "%-*s  %*d  %s"
+      max_name (wire_name e) max_users e.num_users topic
+  in
+  let send s = notify t s in
+  send header >>= fun () ->
+  send sep    >>= fun () ->
+  Lwt_list.iter_s (fun e -> send (line_of e)) entries
+
+(* get_channels: time-gated LIST *)
+let list_refresh_period = 180.0   (* 3 minutes *)
+let list_settle_seconds = 2.0
+
+let get_channels t : Channel_list.t Lwt.t =
+  let now = Unix.gettimeofday () in
+  let allow_refresh =
+    match t.last_list_refresh with
+    | None -> true
+    | Some ts -> (now -. ts) >= list_refresh_period
+  in
+  if not allow_refresh then
+    Lwt.return t.chanlist
+  else begin
+    (* Move the gate immediately to prevent duplicate LIST bursts from near-simultaneous callers *)
+    t.last_list_refresh <- Some now;
+    send_raw t "LIST\r\n" >>= fun () ->
+    Lwt_unix.sleep list_settle_seconds >>= fun () ->
+    Lwt.return t.chanlist
+  end
+
 module Default_cmd = Cmd_core.Make(struct
   type t       = client_ctx
   let send_raw = send_raw
   let join     = join
   let notify   = notify
+  let get_and_emit_channels (c:t) ?filter ?limit () =
+    get_channels c >>= fun _ -> emit_channel_list_dump ?filter ?limit c
 end)
 
 let default_cmd () : cmd_pack =
@@ -116,6 +200,9 @@ let create (c_mod : (module CONN)) (cfg : Conn.cfg)
     opts; running = false;
     cmd_pack = (match cmd with Some p -> p | None -> default_cmd ());
     channels = SMap.empty;
+    chanlist = Channel_list.empty;
+    users = SMap.empty;
+    last_list_refresh = None;
   }
 
 let start_ui t =
@@ -158,7 +245,7 @@ let start_net t =
         Lwt.return_unit
   in
   Lwt.finalize (fun () -> Lwt.pick [ rx_loop (); tx_loop () ])
-               (fun () -> Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
+                (fun () -> Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
 
 let start t =
   if t.running then Lwt.return_unit
@@ -171,4 +258,67 @@ let stop t =
   | None -> Lwt.return_unit
   | Some (B ((module C), conn)) ->
       Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit)
- 
+
+(*  ChannelList (RPL_LIST 322) helpers *)
+let channel_list_find t name =
+  Channel_list.find name t.chanlist
+
+let channel_list_upsert t ~name ~num_users ~topic =
+  t.chanlist <- Channel_list.upsert ~name ~num_users ~topic t.chanlist
+
+(* For `/list`: refresh if permitted, then emit the current snapshot. *)
+let get_and_emit_channels t ?filter ?limit () : unit Lwt.t =
+  get_channels t >>= fun _snapshot ->
+  emit_channel_list_dump ?filter ?limit t
+
+
+(* Users (authoritative) *)
+let user_key_of_nick = User.key_of_nick
+
+let user_find t nick =
+  SMap.find_opt (user_key_of_nick nick) t.users
+
+let user_ensure t nick =
+  let k = user_key_of_nick nick in
+  match SMap.find_opt k t.users with
+  | Some u ->
+      if u.nick <> nick then u.nick <- nick;
+      u
+  | None ->
+      let u = User.make nick in
+      t.users <- SMap.add k u t.users;
+      u
+
+let users_size t = SMap.cardinal t.users
+
+let evict_user_by_key (t : t) (key : string) : unit Lwt.t =
+  (* remove from channels *)
+  t.channels <- SMap.map (fun ch -> Channel.remove_all ch key) t.channels;
+  (* remove from authoritative users map *)
+  t.users <- SMap.remove key t.users;
+  Lwt.return_unit
+
+let evict_user_sync (t : t) (nick : string) : unit =
+  let key = User.key_of_nick nick in
+  (* keep this synchronous version side-effect only *)
+  t.channels <- SMap.map (fun ch -> Channel.remove_all ch key) t.channels;
+  t.users <- SMap.remove key t.users
+
+let prune_orphan_members (t : t) : unit =
+  let module SS = Channel.StringSet in
+  let keep k = SMap.mem k t.users in
+  let filter_set s =
+    SS.fold (fun k acc -> if keep k then SS.add k acc else acc) s SS.empty
+  in
+  t.channels <-
+    SMap.map
+      (fun (ch : Channel.t) ->
+        { ch with
+          users  = filter_set ch.users;
+          ops    = filter_set ch.ops;
+          voices = filter_set ch.voices })
+      t.channels
+
+let evict_user (t : t) (nick : string) : unit Lwt.t =
+  evict_user_sync t nick;
+  Lwt.return_unit

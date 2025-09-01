@@ -20,7 +20,12 @@ module type S = sig
     | Raw_line of string
     | Ping     of { token : string option }
     | Invite   of { channel : string; by : string option }
-    | Other    of string * string list  (* command, params *)
+    | Motd_end of { message : string option } (** 376 RPL_ENDOFMOTD *)
+    | List_item of { channel : string; num_users : int; topic : string option }
+    | Privmsg  of { from : string option; target : string; text : string }
+    | Quit     of { who : string option; message : string option }
+    | Kill     of { nick : string; reason : string option }
+    | Other    of string * string list * string option
 
   val payload : event -> payload
 

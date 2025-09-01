@@ -9,6 +9,7 @@ module Engine : module type of Irc_engine.Engine.Make(P)
 (** Re-export models for convenience. *)
 module User : module type of Model_user
 module Channel : module type of Model_channel
+module Channel_list : module type of Model_channel_list
 
 module type CONN = sig
   type conn
@@ -61,7 +62,41 @@ val cmd_async : t -> key:Cmd_key.t -> args:string list -> unit
 (** Channels model accessors *)
 val channel_find   : t -> string -> Channel.t option
 val channel_ensure : t -> string -> Channel.t
-val channel_upsert : t -> string -> (Channel.t -> Channel.t) -> unit
+
+(** ChannelList (from RPL_LIST 322) accessors *)
+val channel_list_find   : t -> string -> Channel_list.entry option
+val channel_list_upsert :
+  t -> name:string -> num_users:int -> topic:string option -> unit
+
+val get_channels : t -> Channel_list.t Lwt.t
+(** Return the current channel list; if the 3-minute gate has expired,
+    send LIST and wait ~2s for updates before returning. *)
+
+(** For the UI `/list` command: refresh if the gate allows, wait the settle window
+    when we did refresh, then emit a readable dump (one line per channel).  Two
+    optional positional filters are supported:
+      [/list <string> <number>]
+    - <string>: case-insensitive substring on channel name; use "*" or omit for no filter
+    - <number>: limit the number of rows; omit for no limit *)
+val get_and_emit_channels :
+  t ->
+  ?filter:string ->
+  ?limit:int ->
+  unit ->
+  unit Lwt.t
 
 (** Re-export for convenient call-sites: Client.Cmd_key.Join, etc. *)
 module Cmd_key : module type of Cmd_key
+
+(** Users: single source of truth on the client *)
+val user_find   : t -> string -> User.t option
+val user_ensure : t -> string -> User.t
+val users_size  : t -> int
+val prune_orphan_members : t -> unit
+val evict_user_sync : t -> string -> unit
+
+(** Evict a user by normalized key (lowercased nick, no mode prefix). *)
+val evict_user_by_key : t -> string -> unit Lwt.t
+
+(** Evict a user by *nick* (may include mode prefix). *)
+val evict_user : t -> string -> unit Lwt.t
