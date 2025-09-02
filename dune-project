@@ -49,7 +49,7 @@
 (package
  (name omni-irc-ui-notty)
  (synopsis "Omni IRC: Notty-Lwt TUI")
- (depends lwt notty omni-irc-ui))
+ (depends lwt notty yojson omni-irc-ui))
 
 (package
  (name omni-irc-ui)
@@ -66,6 +66,7 @@
  (synopsis "Omni IRC: simple raw client (TCP<->AF_UNIX bridge + optional UI)")
  (depends
   lwt
+  yojson
   omni-irc-sig
   omni-irc-conn
   omni-irc-io-unixsock

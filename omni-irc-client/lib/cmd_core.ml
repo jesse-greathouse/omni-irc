@@ -1,9 +1,11 @@
+(* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
+
 module type CLIENT = sig
   type t
   val send_raw : t -> string -> unit Lwt.t
   val join     : t -> string -> unit Lwt.t
   val notify   : t -> string -> unit Lwt.t
-  val get_and_emit_channels :
+  val list_request :
     t -> ?filter:string -> ?limit:int -> unit -> unit Lwt.t
 end
 
@@ -36,10 +38,8 @@ module Make (C : CLIENT) = struct
       C.send_raw c line
 
     let do_nick (c:ctx) = function
-      | newnick :: _ ->
-          C.send_raw c (Printf.sprintf "NICK %s\r\n" newnick)
-      | [] ->
-          C.notify c "NICK requires a <newnick>"
+      | newnick :: _ -> C.send_raw c (Printf.sprintf "NICK %s\r\n" newnick)
+      | [] -> C.notify c "NICK requires a <newnick>"
 
     let do_privmsg (c:ctx) = function
       | target :: rest ->
@@ -49,9 +49,8 @@ module Make (C : CLIENT) = struct
       | [] ->
           C.notify c "MSG requires a <target> and <message>"
 
-    (* Time-gated LIST: defers to the client (which may reuse cached data). *)
+    (* /list [pattern] [rows] *)
     let do_get_list (c:ctx) (args:string list) =
-      (* args: [filter] [limit]; "*" means unfiltered *)
       let filter_opt =
         match args with
         | [] -> None
@@ -63,12 +62,10 @@ module Make (C : CLIENT) = struct
         match args with
         | [] | [_] -> None
         | _ :: b :: _ ->
-            (try
-                let n = int_of_string (String.trim b) in
-                if n > 0 then Some n else None
-                with _ -> None)
+            (try let n = int_of_string (String.trim b) in if n > 0 then Some n else None
+              with _ -> None)
       in
-      C.get_and_emit_channels c ?filter:filter_opt ?limit:limit_opt ()
+      C.list_request c ?filter:filter_opt ?limit:limit_opt ()
 
     let dispatch _t (c:ctx) ~key ~args =
       let f =

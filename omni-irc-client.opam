@@ -10,6 +10,7 @@ bug-reports: "https://github.com/jessegreathouse/omni-irc/issues"
 depends: [
   "dune" {>= "3.20"}
   "lwt"
+  "yojson"
   "omni-irc-sig"
   "omni-irc-conn"
   "omni-irc-io-unixsock"

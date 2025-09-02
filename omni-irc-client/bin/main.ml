@@ -28,21 +28,16 @@ module Net_tcp : DIAL = struct
     module Base = Irc_io_tcp.Tcp_io.IO
     type t = Base.t
     type endpoint = Endpoint.t
-
     let connect (ep : endpoint) =
       let open Endpoint in
-      let tcp_ep =
-        Irc_io_tcp.Tcp_io.Endpoint.make ~host:ep.host ~port:ep.port
-      in
+      let tcp_ep = Irc_io_tcp.Tcp_io.Endpoint.make ~host:ep.host ~port:ep.port in
       Base.connect tcp_ep
-
     let recv  = Base.recv
     let send  = Base.send
     let close = Base.close
   end
 end
 
-(*UI selection *)
 let select_ui (name_opt : string option) : (module UIX.S) =
   match name_opt with
   | None | Some "" -> (module Irc_ui_notty.Ui : UIX.S)
@@ -53,7 +48,6 @@ let select_ui (name_opt : string option) : (module UIX.S) =
       end
 
 let () =
-  (* CLI *)
   let server    = ref "" in
   let port      = ref 0 in
   let nick      = ref "" in
@@ -94,14 +88,11 @@ let () =
       keepalive = true;
     } in
 
-    (* Build a UI module value *)
     let ui_opt = if !ui_name = "" then None else Some !ui_name in
     let ui_mod = select_ui ui_opt in
 
-    (* Engine (context = Client.t), bound to the default Parser *)
     let (eng : Client.t Engine.t) = Engine.create () in
 
-    (* Core default handlers specialized to Client.t *)
     let module Core_for_client = Core(struct
         type t = Client.t
         let send_raw = Client.send_raw
@@ -111,9 +102,14 @@ let () =
         let chanlist_upsert c ~name ~num_users ~topic =
           Client.channel_list_upsert c ~name ~num_users ~topic; Lwt.return_unit
         let get_channels c =
-          Client.get_channels c >>= fun _ ->
-          Lwt.return_unit
+          Client.get_channels c >>= fun _ -> Lwt.return_unit
         let evict_user = Client.evict_user
+        let list_completed = Client.list_completed
+        let names_prepare   = Client.names_prepare
+        let names_member    = Client.names_member
+        let names_completed = Client.names_completed
+        let member_join c ~ch ~nick = Client.member_join c ~ch ~nick
+        let member_part c ~ch ~nick ~reason = Client.member_part c ~ch ~nick ~reason
       end)
     in
     Core_for_client.register_defaults eng;

@@ -1,11 +1,29 @@
 (* SPDX-License-Identifier: LicenseRef-OmniIRC-ViewOnly-1.0 *)
 open Lwt.Infix
 
-(* Pull in the UI interface *)
+module Y  = Yojson.Safe
+module JU = Yojson.Safe.Util
 module UIX = Irc_ui.Ui_intf
+module SMap = Map.Make(String)
 
 (* Local alias matching what Notty_lwt.event is in newer Notty *)
 type notty_event = [ Notty.Unescape.event | `Resize of int * int ]
+
+(* Local channel-list entry (what the client sends after /LIST) *)
+type chan_entry = {
+  name      : string;
+  num_users : int;
+  topic     : string option;
+}
+
+(* UI-side channel object (authoritative for the UI) *)
+type ui_channel = {
+  name   : string; (* wire name like "#ocaml" *)
+  topic  : string option;
+  users  : string list;
+  ops    : string list;
+  voices : string list;
+}
 
 let max_lines = 5000  (* keep a bounded backlog to avoid OOM with /LIST *)
 
@@ -16,6 +34,8 @@ type t = {
   scroll    : int ref;          (* 0 = bottom *)
   input_buf : Buffer.t;
   rx_acc    : Buffer.t;
+  chanlist  : chan_entry array ref;
+  channels  : ui_channel SMap.t ref;  (* keyed by wire name *)
 }
 
 let create () =
@@ -28,6 +48,8 @@ let create () =
     scroll = ref 0;
     input_buf = Buffer.create 256;
     rx_acc = Buffer.create 4096;
+    chanlist = ref [||];
+    channels = ref SMap.empty;
   }
 
 (* helpers *)
@@ -218,6 +240,142 @@ let push_output_line t s =
   let n = List.length l in
   if n > max_lines then t.lines := drop (n - max_lines) l
 
+(* Now that push_output_line exists, we can safely parse client blobs *)
+let handle_client_blob (t : t) (json_line : string) =
+  (* Best-effort parse; on error, show a tiny diagnostic rather than exploding *)
+  let ok =
+    try
+      let j = Y.from_string json_line in
+      match JU.member "type" j with
+      | `String "chanlist" ->
+          let entries =
+            j |> JU.member "entries" |> JU.to_list |> List.map (fun e ->
+              {
+                name      = e |> JU.member "name"      |> JU.to_string;
+                num_users = e |> JU.member "num_users" |> JU.to_int;
+                topic     = e |> JU.member "topic"     |> JU.to_string_option;
+              })
+            |> Array.of_list
+          in
+            t.chanlist := entries;
+          (* Apply optional view args *)
+          let filter_opt = JU.member "filter" j |> JU.to_string_option in
+          let limit_opt  = JU.member "limit"  j |> JU.to_int_option in
+
+          (* Build and print a simple table, sorted by users desc *)
+          let items =
+            entries
+            |> Array.to_list
+            |> List.sort (fun a b -> compare b.num_users a.num_users)
+          in
+          let lc s = String.lowercase_ascii s in
+          let contains ~needle ~haystack =
+            let needle = lc needle and haystack = lc haystack in
+            let n = String.length needle and h = String.length haystack in
+            if n = 0 then true
+            else
+              let rec loop i =
+                if i + n > h then false
+                else if String.sub haystack i n = needle then true
+                else loop (i + 1)
+              in
+              loop 0
+          in
+          let items =
+            match filter_opt with
+            | None -> items
+            | Some f when f = "" || f = "*" -> items
+            | Some f ->
+                List.filter (fun (e : chan_entry) ->
+                  contains ~needle:f ~haystack:e.name
+                ) items
+          in
+          let items =
+            match limit_opt with
+            | None -> items
+            | Some n when n > 0 ->
+                let rec take k xs =
+                  match k, xs with
+                  | k, _ when k <= 0 -> []
+                  | _, [] -> []
+                  | k, x::tl -> x :: take (k-1) tl
+                in
+                take n items
+            | _ -> items
+          in
+          let max_name  =
+            List.fold_left (fun m (e : chan_entry) -> max m (String.length e.name)) 7 items in
+          let max_users =
+            List.fold_left (fun m (e : chan_entry) ->
+              max m (String.length (string_of_int e.num_users))) 5 items in
+          let header = Printf.sprintf "%-*s  %*s  %s" max_name "Channel" max_users "Users" "Topic" in
+          let sep = String.make (max_name + 2 + max_users + 2 + 5) '-' in
+          push_output_line t (Printf.sprintf "(chanlist: %d entries total)" (Array.length entries));
+          push_output_line t header;
+          push_output_line t sep;
+          List.iter
+            (fun (e : chan_entry) ->
+              let topic = match e.topic with Some s -> s | None -> "" in
+              push_output_line t
+                (Printf.sprintf "%-*s  %*d  %s" max_name e.name max_users e.num_users topic))
+            items;
+          true
+      | `String "channels" ->
+          let op = JU.member "op" j |> JU.to_string_option |> Option.value ~default:"upsert" in
+          let parse_channel (k:string) (v:Yojson.Safe.t) : (string * ui_channel) =
+            let get_list name =
+              match JU.member name v with
+              | `Null -> []
+              | x ->
+                  JU.to_list x
+                  |> List.filter_map (fun e -> match e with `String s -> Some s | _ -> None)
+            in
+            let name   = (JU.member "name" v |> JU.to_string_option) |> Option.value ~default:k in
+            let topic  = JU.member "topic" v |> JU.to_string_option in
+            let users  = get_list "users" in
+            let ops    = get_list "ops" in
+            let voices = get_list "voices" in
+            (k, { name; topic; users; ops; voices })
+          in
+          begin match op with
+          | "snapshot" | "upsert" ->
+              let assoc =
+                match JU.member "channels" j with
+                | `Assoc pairs -> pairs
+                | _ -> []
+              in
+              let parsed = List.map (fun (k,v) -> parse_channel k v) assoc in
+              if op = "snapshot" then t.channels := SMap.empty;
+              List.iter (fun (k,ch) -> t.channels := SMap.add k ch !(t.channels)) parsed;
+              let msg =
+                match op, parsed with
+                | ("upsert", [(_k, ch)]) ->
+                    Printf.sprintf "(channels upsert: %s)" ch.name
+                | _ ->
+                    Printf.sprintf "(channels %s: %d item%s)"
+                      op (List.length parsed) (if List.length parsed = 1 then "" else "s")
+              in
+              push_output_line t msg; true
+          | "remove" ->
+              let names =
+                match JU.member "names" j with
+                | `List xs ->
+                    xs |> List.filter_map (function `String s -> Some s | _ -> None)
+                | _ -> []
+              in
+              List.iter (fun k -> t.channels := SMap.remove k !(t.channels)) names;
+              push_output_line t
+                (Printf.sprintf "(channels remove: %d item%s)"
+                  (List.length names) (if List.length names = 1 then "" else "s"));
+              true
+          | _ ->
+              false
+          end
+      | _ -> false
+  with _ -> false
+in
+if not ok then push_output_line t "(CLIENT blob ignored: unrecognized or invalid JSON)"
+
 let feed_chunk t (chunk : string) =
   Buffer.add_string t.rx_acc chunk;
   let s = Buffer.contents t.rx_acc in
@@ -346,16 +504,25 @@ let run t ~from_client ~to_client =
 
   let rec from_client_loop () =
     from_client () >>= function
-    | UIX.ClientClosed ->
-        push_output_line t "(connection closed)";
-        redraw t
-    | UIX.ClientInfo s ->
+  | UIX.ClientClosed ->
+      push_output_line t "(connection closed)";
+      redraw t
+  | UIX.ClientInfo s ->
+      (* Intercept "CLIENT <json>" control lines *)
+      let prefix = "CLIENT " in
+      if String.length s >= String.length prefix
+          && String.sub s 0 (String.length prefix) = prefix
+      then (
+        let payload = String.sub s (String.length prefix) (String.length s - String.length prefix) in
+        handle_client_blob t payload;
+        redraw t >>= from_client_loop
+      ) else (
         push_output_line t s;
         redraw t >>= from_client_loop
-    | UIX.ClientRxChunk b ->
-        feed_chunk t (Bytes.unsafe_to_string b);
-        (* Single redraw per chunk, not per line *)
-        redraw t >>= from_client_loop
+      )
+  | UIX.ClientRxChunk b ->
+      feed_chunk t (Bytes.unsafe_to_string b);
+      redraw t >>= from_client_loop
   in
 
   Lwt.finalize

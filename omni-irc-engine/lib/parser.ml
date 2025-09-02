@@ -6,15 +6,27 @@ type payload =
   | Invite   of { channel : string; by : string option }
   | Motd_end of { message : string option }     (* 376 *)
   | List_item of { channel : string; num_users : int; topic : string option }  (* 322 *)
+  | List_end  of { message : string option }    (* 323 *)
   | Privmsg  of { from : string option; target : string; text : string }
   | Quit     of { who : string option; message : string option }
   | Kill     of { nick : string; reason : string option }
+  | Join     of { channel : string; nick : string option; reason : string option }
+  | Part     of { channel : string; nick : string option; reason : string option }
   | Other    of string * string list * string option
 
 type event = { name : string; payload : payload }
 
 let name e = e.name
 let payload e = e.payload
+
+(* Extract the nick from an IRC prefix like "nick!user@host" *)
+let nick_of_prefix (p : string option) : string option =
+  match p with
+  | None -> None
+  | Some s ->
+      match String.index_opt s '!' with
+      | Some i -> Some (String.sub s 0 i)
+      | None   -> Some s
 
 (* local helpers, intentionally private *)
 let trim s =
@@ -26,14 +38,13 @@ let trim s =
 
 let of_line line =
   let line = trim line in
-  (* IRCv3 message tags: if the line begins with '@', strip the tag section up to the first space *)
+  (* strip IRCv3 tags if present *)
   let line =
     if String.length line > 0 && line.[0] = '@' then
       match String.index_opt line ' ' with
       | Some i -> String.sub line (i + 1) (String.length line - i - 1)
-      | None   -> ""  (* tags with no rest: treat as empty *)
-    else
-      line
+      | None   -> ""
+    else line
   in
   if line = "" then { name = "RAW"; payload = Raw_line line } else
   (* Optional prefix *)
@@ -79,6 +90,12 @@ let of_line line =
   match command, params, trailing with
   | "PING", _, t ->
       { name = "PING"; payload = Ping { token = t } }
+  | "JOIN", (ch :: _), reason ->
+      { name = "JOIN";
+        payload = Join { channel = ch; nick = nick_of_prefix prefix; reason } }
+  | "JOIN", [], (Some ch) ->
+      { name = "JOIN";
+        payload = Join { channel = ch; nick = nick_of_prefix prefix; reason = None } }
   | "INVITE", _nick :: ch :: _, _ ->
       { name = "INVITE"; payload = Invite { channel = ch; by = prefix } }
   | "INVITE", _nick :: _, Some ch ->
@@ -88,8 +105,16 @@ let of_line line =
   | "322", _me :: ch :: users :: _, topic ->
       let num_users = try int_of_string users with _ -> 0 in
       { name = "RPL_LIST"; payload = List_item { channel = ch; num_users; topic } }
+  | "323", _me :: _, msg ->
+      { name = "RPL_LISTEND"; payload = List_end { message = msg } }
   | "PRIVMSG", target :: _, Some text ->
       { name = "PRIVMSG"; payload = Privmsg { from = prefix; target; text } }
+  | "PART", (ch :: _), reason ->
+      { name = "PART";
+        payload = Part { channel = ch; nick = nick_of_prefix prefix; reason } }
+  | "PART", [], (Some ch) ->
+      { name = "PART";
+        payload = Part { channel = ch; nick = nick_of_prefix prefix; reason = None } }
   | "QUIT", _, msg ->
       { name = "QUIT"; payload = Quit { who = prefix; message = msg } }
   | "KILL", nick :: _, reason ->
@@ -104,7 +129,6 @@ module Acc = struct
   let push_chunk t chunk =
     Buffer.add_string t.buf chunk;
     let s = Buffer.contents t.buf in
-    (* Split on '\n'; keep final tail (possibly partial). *)
     let parts = String.split_on_char '\n' s in
     let rev = List.rev parts in
     let tail, complete =

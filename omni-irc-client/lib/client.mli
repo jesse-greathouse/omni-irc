@@ -69,21 +69,24 @@ val channel_list_upsert :
   t -> name:string -> num_users:int -> topic:string option -> unit
 
 val get_channels : t -> Channel_list.t Lwt.t
-(** Return the current channel list; if the 3-minute gate has expired,
-    send LIST and wait ~2s for updates before returning. *)
+(** Legacy, time-gated “send LIST then wait briefly” function (still available). *)
 
-(** For the UI `/list` command: refresh if the gate allows, wait the settle window
-    when we did refresh, then emit a readable dump (one line per channel).  Two
-    optional positional filters are supported:
-      [/list <string> <number>]
-    - <string>: case-insensitive substring on channel name; use "*" or omit for no filter
-    - <number>: limit the number of rows; omit for no limit *)
+(** New flow for /list: gate + async emit on 323. *)
+val list_request :
+  t ->
+  ?filter:string ->
+  ?limit:int ->
+  unit -> unit Lwt.t
+
+(** Called by Core on 323 to dump the table to the UI (using last requested args). *)
+val list_completed : t -> unit Lwt.t
+
+(** For direct dumps in other contexts (kept for convenience). *)
 val get_and_emit_channels :
   t ->
   ?filter:string ->
   ?limit:int ->
-  unit ->
-  unit Lwt.t
+  unit -> unit Lwt.t
 
 (** Re-export for convenient call-sites: Client.Cmd_key.Join, etc. *)
 module Cmd_key : module type of Cmd_key
@@ -94,9 +97,21 @@ val user_ensure : t -> string -> User.t
 val users_size  : t -> int
 val prune_orphan_members : t -> unit
 val evict_user_sync : t -> string -> unit
-
-(** Evict a user by normalized key (lowercased nick, no mode prefix). *)
 val evict_user_by_key : t -> string -> unit Lwt.t
-
-(** Evict a user by *nick* (may include mode prefix). *)
 val evict_user : t -> string -> unit Lwt.t
+
+(** Channels → UI synchronization blobs (CLIENT JSON). *)
+val emit_channels_snapshot : t -> unit Lwt.t
+val emit_channels_upsert   : t -> names:string list -> unit Lwt.t
+val emit_channels_remove   : t -> names:string list -> unit Lwt.t
+
+(** NAMES 353/366 helpers used by core handlers *)
+val names_prepare   : t -> string -> unit Lwt.t
+val names_member    :
+  t -> ch:string -> nick:string -> status:[ `Op | `Voice | `User ] -> unit Lwt.t
+
+val names_completed : t -> string -> unit Lwt.t
+
+(** NEW: update per-channel membership on JOIN/PART *)
+val member_join : t -> ch:string -> nick:string -> unit Lwt.t
+val member_part : t -> ch:string -> nick:string -> reason:string option -> unit Lwt.t

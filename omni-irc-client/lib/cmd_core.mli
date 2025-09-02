@@ -5,12 +5,15 @@ module type CLIENT = sig
   val send_raw : t -> string -> unit Lwt.t
   val join     : t -> string -> unit Lwt.t
   val notify   : t -> string -> unit Lwt.t
-  val get_and_emit_channels :
+
+  (** Request a channel list:
+      - If cached (gate not expired), dump immediately.
+      - If expired, clear cache, send LIST, and dump on 323. *)
+  val list_request :
     t ->
     ?filter:string ->
     ?limit:int ->
-    unit ->
-    unit Lwt.t
+    unit -> unit Lwt.t
 end
 
 module Make (C : CLIENT) : sig
