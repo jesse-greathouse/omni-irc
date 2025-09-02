@@ -111,6 +111,13 @@ let () =
         let names_completed = Client.names_completed
         let member_join c ~ch ~nick = Client.member_join c ~ch ~nick
         let member_part c ~ch ~nick ~reason = Client.member_part c ~ch ~nick ~reason
+        (* WHOIS bridges *)
+        let whois_basic    = Client.whois_basic
+        let whois_server   = Client.whois_server
+        let whois_channels = Client.whois_channels
+        let whois_actual   = Client.whois_actual
+        let whois_secure   = Client.whois_secure
+        let whois_complete = Client.whois_complete
       end)
     in
     Core_for_client.register_defaults eng;

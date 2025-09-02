@@ -23,6 +23,8 @@ type whois = {
   channels    : string list;
   idle_secs   : int option;
   signon_ts   : float option;
+  actual_host : string option;
+  secure      : bool option;
 }
 
 type t = {

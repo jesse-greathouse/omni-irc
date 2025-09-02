@@ -35,7 +35,7 @@ my @excluded_dirs = map { qr/$_/ } (
 my @excluded_files = map { qr/$_/ } (
     '.*\.log$', '.*\.log\..*', '.*\.DS_Store$', '.*\.pem$', '.*\.crt$', '^\.\/bin/composer',
     '.*\.key$', '.*\.csr$', '.*\.der$', '.*\.pfx$', '.*\.p12$', '.*package\-lock\.json$',
-    '.*postman.*', '.*\.pid$', '^\.\/commit\.txt',
+    '.*postman.*', '.*\.pid$', '^\.\/commit\.txt', '.*\.opam$',
     '^\.\/LICENSE$', '^\.\/README\.md$', '.*angular\.json$', '.*tsconfig\.spec\.json$',
     '.*tsconfig\.app\.json$', '.*tsconfig\.json$', '.*tslint\.json$', '.*karma\.conf\.js$', '.*polyfills\.ts$',
     '^\.\/etc\/nginx\/nginx\.conf$', '^\.\/etc\/nginx\/force-ssl\.conf$',

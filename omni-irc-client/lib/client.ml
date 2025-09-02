@@ -55,8 +55,12 @@ type t = {
   mutable last_list_refresh : float option;
   mutable last_list_args    : (string option * int option) option;
   mutable names_refreshing  : CSet.t;
+  mutable whois_last_ts     : float SMap.t;
 }
 and cmd_pack = Pack : (module CMD with type ctx = t and type t = 'a) * 'a -> cmd_pack
+
+(* Make the user key helper available before first use. *)
+let user_key_of_nick = User.key_of_nick
 
 type client_ctx = t
 
@@ -143,6 +147,85 @@ let emit_channel_list_dump ?filter ?limit (t : t) : unit Lwt.t =
   send sep    >>= fun () ->
   Lwt_list.iter_s (fun e -> send (line_of e)) entries
 
+let user_find t nick =
+  SMap.find_opt (user_key_of_nick nick) t.users
+
+let user_ensure t nick =
+  let k = user_key_of_nick nick in
+  match SMap.find_opt k t.users with
+  | Some u ->
+      if u.nick <> nick then u.nick <- nick;
+      u
+  | None ->
+      let u = User.make nick in
+      t.users <- SMap.add k u t.users;
+      u
+
+let json_of_user (u : User.t) : Yojson.Safe.t =
+  let who =
+    match u.whois with
+    | None -> `Null
+    | Some w ->
+        `Assoc [
+          ("user",        (match w.user with Some x -> `String x | None -> `Null));
+          ("host",        (match w.host with Some x -> `String x | None -> `Null));
+          ("realname",    (match w.realname with Some x -> `String x | None -> `Null));
+          ("server",      (match w.server with Some x -> `String x | None -> `Null));
+          ("server_info", (match w.server_info with Some x -> `String x | None -> `Null));
+          ("account",     (match w.account with Some x -> `String x | None -> `Null));
+          ("channels",    `List (List.map (fun s -> `String s) w.channels));
+          ("idle_secs",   (match w.idle_secs with Some x -> `Int x | None -> `Null));
+          ("signon_ts",   (match w.signon_ts with Some x -> `Float x | None -> `Null));
+          ("actual_host", (match w.actual_host with Some x -> `String x | None -> `Null));
+          ("secure",      (match w.secure with Some x -> `Bool x | None -> `Null));
+        ]
+  in
+  `Assoc [
+    ("nick",        `String u.nick);
+    ("real_name",   (match u.real_name with Some x -> `String x | None -> `Null));
+    ("ident",       (match u.ident with Some x -> `String x | None -> `Null));
+    ("host",        (match u.host with Some x -> `String x | None -> `Null));
+    ("account",     (match u.account with Some x -> `String x | None -> `Null));
+    ("away",        (match u.away with Some x -> `Bool x | None -> `Null));
+    ("whois",       who);
+  ]
+
+let emit_console_user_upsert (t : t) ~(u : User.t) : unit Lwt.t =
+  let payload =
+    `Assoc [
+      ("type", `String "user");
+      ("op",   `String "upsert");
+      ("ts",   `Float (Unix.gettimeofday ()));
+      ("user", json_of_user u)
+    ]
+  in
+  (* Intentionally using CONSOLE prefix per requirement *)
+  notify t ("CONSOLE " ^ Yojson.Safe.to_string payload)
+
+(* time-gated WHOIS request *)
+let whois_refresh_period = 180.0   (* 3 minutes *)
+
+let whois_request (t : t) (nick : string) : unit Lwt.t =
+  let key = user_key_of_nick nick in
+  let now = Unix.gettimeofday () in
+  let fresh =
+    match SMap.find_opt key t.whois_last_ts with
+    | None -> false
+    | Some ts -> (now -. ts) < whois_refresh_period
+  in
+  if fresh then (
+    (* Serve from cache if we have the user; emit the same JSON we use on 318 *)
+    match SMap.find_opt (user_key_of_nick nick) t.users with
+    | None ->
+        notify t (Printf.sprintf "WHOIS cache miss for %s; querying server…" nick) >>= fun () ->
+        send_raw t (Printf.sprintf "WHOIS %s\r\n" nick)
+    | Some u ->
+        emit_console_user_upsert t ~u
+  ) else (
+    t.whois_last_ts <- SMap.add key now t.whois_last_ts;
+    send_raw t (Printf.sprintf "WHOIS %s\r\n" nick)
+  )
+
 (* existing, time-gated LIST with settle delay (kept as-is) *)
 let list_refresh_period = 180.0   (* 3 minutes *)
 let list_settle_seconds = 2.0
@@ -186,12 +269,12 @@ let emit_client_blob t (j : Yojson.Safe.t) : unit Lwt.t =
   let line = "CLIENT " ^ (Y.to_string j) in
   notify t line
 
-(* -------- Channels → UI sync (snapshot / upsert / remove) -------- *)
+(* Channels → UI sync (snapshot / upsert / remove) *)
 let set_to_list (s : Channel.StringSet.t) : string list =
   Channel.StringSet.elements s
 
 let json_of_channel (ch : Channel.t) : Yojson.Safe.t =
-  let max_emit = 1000 in (* tune as you like *)
+  let max_emit = 3000 in (* Max Records it can churn *)
   let take_with_more n xs =
     let rec take k acc = function
       | [] -> (List.rev acc, 0)
@@ -319,6 +402,7 @@ module Default_cmd = Cmd_core.Make(struct
   let list_request = list_request
   let channel_show (c:client_ctx) (ch:string) =
     emit_channel_info c ~name:ch
+  let whois_request = whois_request
 end)
 
 let default_cmd () : cmd_pack =
@@ -347,6 +431,7 @@ let create (c_mod : (module CONN)) (cfg : Conn.cfg)
     last_list_refresh = None;
     last_list_args = None;
     names_refreshing = CSet.empty;
+    whois_last_ts = SMap.empty;
   }
 
 let start_ui t =
@@ -417,23 +502,6 @@ let channel_list_upsert t ~name ~num_users ~topic =
 let get_and_emit_channels t ?filter ?limit () : unit Lwt.t =
   get_channels t >>= fun _snapshot ->
   emit_channel_list_dump ?filter ?limit t
-
-(* Users (authoritative) *)
-let user_key_of_nick = User.key_of_nick
-
-let user_find t nick =
-  SMap.find_opt (user_key_of_nick nick) t.users
-
-let user_ensure t nick =
-  let k = user_key_of_nick nick in
-  match SMap.find_opt k t.users with
-  | Some u ->
-      if u.nick <> nick then u.nick <- nick;
-      u
-  | None ->
-      let u = User.make nick in
-      t.users <- SMap.add k u t.users;
-      u
 
 let users_size t = SMap.cardinal t.users
 
@@ -541,3 +609,68 @@ let channel_set_topic (t : t) ~ch ~topic : unit Lwt.t =
   let ch'   = Channel.set_topic chobj (Some topic) in
   t.channels <- SMap.add kch ch' t.channels;
   emit_channels_upsert t ~names:[ch]
+
+
+(* ---------------- WHOIS helpers ---------------- *)
+let ensure_whois (u : User.t) : User.whois =
+  match u.whois with
+  | Some w -> w
+  | None -> {
+      user=None; host=None; realname=None;
+      server=None; server_info=None; account=None;
+      channels=[]; idle_secs=None; signon_ts=None;
+      actual_host=None; secure=None;
+    }
+
+let set_user t k u =
+  t.users <- SMap.add k u t.users
+
+let whois_basic (t : t) ~nick ~user ~host ~realname =
+  let k = user_key_of_nick nick in
+  let u = user_ensure t nick in
+  let w = ensure_whois u in
+  let w' = { w with user=Some user; host=Some host; realname } in
+  u.whois <- Some w';
+  set_user t k u;
+  Lwt.return_unit
+
+let whois_server (t : t) ~nick ~server ~server_info =
+  let k = user_key_of_nick nick in
+  let u = user_ensure t nick in
+  let w = ensure_whois u in
+  let w' = { w with server=Some server; server_info } in
+  u.whois <- Some w';
+  set_user t k u;
+  Lwt.return_unit
+
+let whois_channels (t : t) ~nick ~channels =
+  let k = user_key_of_nick nick in
+  let u = user_ensure t nick in
+  let w = ensure_whois u in
+  let w' = { w with channels } in
+  u.whois <- Some w';
+  set_user t k u;
+  Lwt.return_unit
+
+let whois_actual (t : t) ~nick ~actual_host =
+  let k = user_key_of_nick nick in
+  let u = user_ensure t nick in
+  let w = ensure_whois u in
+  let w' = { w with actual_host = Some actual_host } in
+  u.whois <- Some w';
+  set_user t k u;
+  Lwt.return_unit
+
+let whois_secure (t : t) ~nick =
+  let k = user_key_of_nick nick in
+  let u = user_ensure t nick in
+  let w = ensure_whois u in
+  let w' = { w with secure = Some true } in
+  u.whois <- Some w';
+  set_user t k u;
+  Lwt.return_unit
+
+let whois_complete (t : t) ~nick =
+  let _k = user_key_of_nick nick in
+  let u = user_ensure t nick in
+  emit_console_user_upsert t ~u

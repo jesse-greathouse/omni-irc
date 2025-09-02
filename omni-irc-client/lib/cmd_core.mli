@@ -11,6 +11,7 @@ module type CLIENT = sig
     ?limit:int ->
     unit -> unit Lwt.t
   val channel_show : t -> string -> unit Lwt.t
+  val whois_request : t -> string -> unit Lwt.t
 end
 
 module Make (C : CLIENT) : sig

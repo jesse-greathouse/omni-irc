@@ -9,6 +9,7 @@ type t =
   | Privmsg
   | Get_list
   | Channel
+  | WhoIs
   | Custom of string  (** catch-all / extension point *)
 
 val of_string : string -> t

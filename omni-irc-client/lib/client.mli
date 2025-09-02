@@ -79,6 +79,8 @@ val list_request :
   ?limit:int ->
   unit -> unit Lwt.t
 
+val whois_request : t -> string -> unit Lwt.t
+
 (** Called by Core on 323 to dump the table to the UI (using last requested args). *)
 val list_completed : t -> unit Lwt.t
 
@@ -117,6 +119,14 @@ val names_member    :
 
 val names_completed : t -> string -> unit Lwt.t
 
-(** NEW: update per-channel membership on JOIN/PART *)
+(** update per-channel membership on JOIN/PART *)
 val member_join : t -> ch:string -> nick:string -> unit Lwt.t
 val member_part : t -> ch:string -> nick:string -> reason:string option -> unit Lwt.t
+
+(** WHOIS mutation helpers (called by Core) *)
+val whois_basic     : t -> nick:string -> user:string -> host:string -> realname:string option -> unit Lwt.t
+val whois_server    : t -> nick:string -> server:string -> server_info:string option -> unit Lwt.t
+val whois_channels  : t -> nick:string -> channels:string list -> unit Lwt.t
+val whois_actual    : t -> nick:string -> actual_host:string -> unit Lwt.t
+val whois_secure    : t -> nick:string -> unit Lwt.t
+val whois_complete  : t -> nick:string -> unit Lwt.t

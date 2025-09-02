@@ -22,6 +22,19 @@ module type CLIENT = sig
 
   val member_join : t -> ch:string -> nick:string -> unit Lwt.t
   val member_part : t -> ch:string -> nick:string -> reason:string option -> unit Lwt.t
+
+  val whois_basic     :
+    t -> nick:string -> user:string -> host:string -> realname:string option -> unit Lwt.t
+  val whois_server    :
+    t -> nick:string -> server:string -> server_info:string option -> unit Lwt.t
+  val whois_channels  :
+    t -> nick:string -> channels:string list -> unit Lwt.t
+  val whois_actual    :
+    t -> nick:string -> actual_host:string -> unit Lwt.t
+  val whois_secure    :
+    t -> nick:string -> unit Lwt.t
+  val whois_complete  :
+    t -> nick:string -> unit Lwt.t
 end
 
 module Make (P : Parser_intf.S) (C : CLIENT) = struct
@@ -159,6 +172,78 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
     | P.Part _ -> Lwt.return_unit
     | _ -> Lwt.return_unit
 
+  (* ------- WHOIS handlers ------- *)
+  (* 311 RPL_WHOISUSER: <me> <nick> <user> <host> * :<realname> *)
+  let h_whois_311 (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Other ("311", params, trailing) ->
+        (match params with
+         | _me :: nick :: user :: host :: _star :: _ ->
+             C.whois_basic c ~nick ~user ~host ~realname:trailing
+         | _ -> Lwt.return_unit)
+    | _ -> Lwt.return_unit
+
+  (* 312 RPL_WHOISSERVER: <me> <nick> <server> :<server_info> *)
+  let h_whois_312 (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Other ("312", params, trailing) ->
+        (match params with
+         | _me :: nick :: server :: _ ->
+             C.whois_server c ~nick ~server ~server_info:trailing
+         | _ -> Lwt.return_unit)
+    | _ -> Lwt.return_unit
+
+  (* 319 RPL_WHOISCHANNELS: <me> <nick> :<chans...> *)
+  let h_whois_319 (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Other ("319", params, trailing) ->
+        (match params, trailing with
+         | (_me :: nick :: _), Some chans ->
+             let chans =
+               chans
+               |> String.split_on_char ' '
+               |> List.filter (fun s -> s <> "")
+             in
+             C.whois_channels c ~nick ~channels:chans
+         | _ -> Lwt.return_unit)
+    | _ -> Lwt.return_unit
+
+  (* 338 WHOIS host/actually; conservatively capture trailing or a param as hostname/IP *)
+  let h_whois_338 (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Other ("338", params, trailing) ->
+        (* Common patterns vary; prefer trailing, else last param *)
+        let actual =
+          match trailing with
+          | Some t when t <> "" -> Some t
+          | _ ->
+            (match List.rev params with
+             | last :: _ when last <> "" -> Some last
+             | _ -> None)
+        in
+        (match params, actual with
+         | (_me :: nick :: _), Some host -> C.whois_actual c ~nick ~actual_host:host
+         | _ -> Lwt.return_unit)
+    | _ -> Lwt.return_unit
+
+  (* 671 RPL_WHOISSECURE: <me> <nick> :is using a secure connection *)
+  let h_whois_671 (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Other ("671", params, _msg) ->
+        (match params with
+         | _me :: nick :: _ -> C.whois_secure c ~nick
+         | _ -> Lwt.return_unit)
+    | _ -> Lwt.return_unit
+
+  (* 318 RPL_ENDOFWHOIS: <me> <nick> :End of /WHOIS list.  -> trigger upsert emit *)
+  let h_whois_318 (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Other ("318", params, _msg) ->
+        (match params with
+         | _me :: nick :: _ -> C.whois_complete c ~nick
+         | _ -> Lwt.return_unit)
+    | _ -> Lwt.return_unit
+
   let register_defaults eng =
     E.on eng "332"           h_rpl_topic;
     E.on eng "PING"          h_ping;
@@ -173,5 +258,12 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
     E.on eng "QUIT"          h_quit;
     E.on eng "KILL"          h_kill;
     E.on eng "JOIN"          h_join;
-    E.on eng "PART"          h_part
+    E.on eng "PART"          h_part;
+    (* WHOIS numerics *)
+    E.on eng "311"           h_whois_311;
+    E.on eng "312"           h_whois_312;
+    E.on eng "319"           h_whois_319;
+    E.on eng "338"           h_whois_338;
+    E.on eng "671"           h_whois_671;
+    E.on eng "318"           h_whois_318
 end

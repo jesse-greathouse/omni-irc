@@ -20,9 +20,17 @@ module type CLIENT = sig
     t -> ch:string -> nick:string -> status:[ `Op | `Voice | `User ] -> unit Lwt.t
   val names_completed : t -> string -> unit Lwt.t
 
-  (** NEW: membership changes from JOIN/PART *)
+  (** membership changes from JOIN/PART *)
   val member_join : t -> ch:string -> nick:string -> unit Lwt.t
   val member_part : t -> ch:string -> nick:string -> reason:string option -> unit Lwt.t
+
+  (** WHOIS updaters (called from Core on 311/312/319/338/671), and end signal (318). *)
+  val whois_basic     : t -> nick:string -> user:string -> host:string -> realname:string option -> unit Lwt.t
+  val whois_server    : t -> nick:string -> server:string -> server_info:string option -> unit Lwt.t
+  val whois_channels  : t -> nick:string -> channels:string list -> unit Lwt.t
+  val whois_actual    : t -> nick:string -> actual_host:string -> unit Lwt.t
+  val whois_secure    : t -> nick:string -> unit Lwt.t
+  val whois_complete  : t -> nick:string -> unit Lwt.t
 end
 
 module Make (P : Parser_intf.S) (C : CLIENT) : sig

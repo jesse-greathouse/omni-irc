@@ -25,6 +25,36 @@ type ui_channel = {
   voices : string list;
 }
 
+(* UI-side user object (subset we show/sync) *)
+type ui_user = {
+  nick              : string;
+  real_name         : string option;
+  ident             : string option;
+  host              : string option;
+  account           : string option;
+  away              : bool option;
+  whois_user        : string option;
+  whois_host        : string option;
+  whois_realname    : string option;
+  whois_server      : string option;
+  whois_server_info : string option;
+  whois_account     : string option;
+  whois_actual_host : string option;
+  whois_secure      : bool option;
+}
+
+(* Normalize a nick to a stable map key:
+   - strip a single leading status marker (@ + % & ~)
+   - lowercase *)
+let normalize_nick_for_key (s : string) : string =
+  let s =
+    if s = "" then s else
+    match s.[0] with
+    | '@' | '+' | '%' | '&' | '~' -> String.sub s 1 (String.length s - 1)
+    | _ -> s
+  in
+  String.lowercase_ascii s
+
 let max_lines = 5000  (* keep a bounded backlog to avoid OOM with /LIST *)
 
 type t = {
@@ -35,6 +65,7 @@ type t = {
   input_buf : Buffer.t;
   rx_acc    : Buffer.t;
   chanlist  : chan_entry array ref;
+  users     : ui_user SMap.t ref;
   channels  : ui_channel SMap.t ref;  (* keyed by wire name *)
   draw_lock : Lwt_mutex.t;            (* serialize Notty draws *)
 }
@@ -50,11 +81,17 @@ let create () =
     input_buf = Buffer.create 256;
     rx_acc = Buffer.create 4096;
     chanlist = ref [||];
+    users = ref SMap.empty; 
     channels = ref SMap.empty;
     draw_lock = Lwt_mutex.create ();
   }
 
 (* helpers *)
+
+let kvs_string (pairs:(string * string option) list) =
+  pairs
+  |> List.filter_map (fun (k,v) -> match v with None -> None | Some s when s="" -> None | Some s -> Some (k ^ "=" ^ s))
+  |> String.concat " "
 
 let append_uchar_utf8 (buf : Buffer.t) (u : Uchar.t) =
   let n = Uchar.to_int u in
@@ -408,6 +445,72 @@ let handle_client_blob (t : t) (json_line : string) =
             (Printf.sprintf "(chanlist: %d entries total)" (Array.length entries)
             :: header :: sep :: rows);
           true
+      | `String "user" ->
+          (* Expect shape: { type:"user", op:"upsert", user:{...} } *)
+          let u = JU.member "user" j in
+          let get_opt name = JU.member name u |> JU.to_string_option in
+          let get_bool_opt name =
+            match JU.member name u with
+            | `Bool b -> Some b
+            | _ -> None
+          in
+          let nick =
+            JU.member "nick" u |> JU.to_string_option |> Option.value ~default:"(unknown)"
+          in
+          let who =
+            match JU.member "whois" u with
+            | `Assoc _ as x -> x
+            | _ -> `Null
+          in
+          let wu name =
+            match JU.member name who with
+            | `String s -> Some s
+            | `Bool b -> Some (if b then "true" else "false")
+            | `Null -> None
+            | _ -> None
+          in
+          let uiu : ui_user = {
+            nick;
+            real_name   = get_opt "real_name";
+            ident       = get_opt "ident";
+            host        = get_opt "host";
+            account     = get_opt "account";
+            away        = get_bool_opt "away";
+            whois_user        = wu "user";
+            whois_host        = wu "host";
+            whois_realname    = wu "realname";
+            whois_server      = wu "server";
+            whois_server_info = wu "server_info";
+            whois_account     = wu "account";
+            whois_actual_host = wu "actual_host";
+            whois_secure      =
+              (match JU.member "secure" who with `Bool b -> Some b | _ -> None);
+          } in
+          let key = normalize_nick_for_key nick in
+          t.users := SMap.add key uiu !(t.users);
+
+          (* Compose a succinct note about updated keys *)
+          let updated =
+            kvs_string [
+              ("real_name", uiu.real_name);
+              ("ident",     uiu.ident);
+              ("host",      uiu.host);
+              ("account",   uiu.account);
+              ("away",      Option.map string_of_bool uiu.away);
+              ("whois.user",        uiu.whois_user);
+              ("whois.host",        uiu.whois_host);
+              ("whois.realname",    uiu.whois_realname);
+              ("whois.server",      uiu.whois_server);
+              ("whois.server_info", uiu.whois_server_info);
+              ("whois.account",     uiu.whois_account);
+              ("whois.actual_host", uiu.whois_actual_host);
+              ("whois.secure",      Option.map string_of_bool uiu.whois_secure);
+            ]
+          in
+          push_output_line t
+            (Printf.sprintf "(Updating user %s: %s)"
+               nick (if updated = "" then "(no fields)" else updated));
+          true
       | `String "channel" ->
           let ch = JU.member "channel" j in
           let to_str_list field =
@@ -575,6 +678,10 @@ let run t ~from_client ~to_client =
               `Cmd ("GET_LIST", args)
           | "raw" ->
               `Cmd ("RAW", args)
+          | "user" ->
+              `Cmd ("WHOIS", args)
+          | "whois" ->
+              `Cmd ("WHOIS", args)
           | other ->
               `Cmd (String.uppercase_ascii other, args)
           end
@@ -632,18 +739,22 @@ let run t ~from_client ~to_client =
       push_output_line t "(connection closed)";
       redraw t
   | UIX.ClientInfo s ->
-      (* Intercept "CLIENT <json>" control lines *)
-      let prefix = "CLIENT " in
-      if String.length s >= String.length prefix
-          && String.sub s 0 (String.length prefix) = prefix
-      then (
-        let payload = String.sub s (String.length prefix) (String.length s - String.length prefix) in
-        handle_client_blob t payload;
-        redraw t >>= from_client_loop
-      ) else (
-        push_output_line t s;
-        redraw t >>= from_client_loop
-      )
+      let handle_prefixed prefix =
+        if String.length s >= String.length prefix
+           && String.sub s 0 (String.length prefix) = prefix
+        then Some (String.sub s (String.length prefix) (String.length s - String.length prefix))
+        else None
+      in
+      begin match handle_prefixed "CLIENT " with
+      | Some payload -> handle_client_blob t payload; redraw t >>= from_client_loop
+      | None ->
+        begin match handle_prefixed "CONSOLE " with
+        | Some payload -> handle_client_blob t payload; redraw t >>= from_client_loop
+        | None ->
+            (* plain line *)
+            push_output_line t s; redraw t >>= from_client_loop
+        end
+      end
   | UIX.ClientRxChunk b ->
       feed_chunk t (Bytes.unsafe_to_string b);
       redraw t >>= from_client_loop

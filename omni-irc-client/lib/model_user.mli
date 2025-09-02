@@ -17,6 +17,8 @@ type whois = {
   channels    : string list;         (** channels listed by WHOIS, wire names *)
   idle_secs   : int option;          (** idle time (seconds) *)
   signon_ts   : float option;        (** signon unix timestamp *)
+  actual_host : string option;       (** RPL_WHOISACTUALLY / 338 *)
+  secure      : bool option;         (** RPL_WHOISSECURE / 671 *)
 }
 
 (** Authoritative user object (single source of truth per client). *)

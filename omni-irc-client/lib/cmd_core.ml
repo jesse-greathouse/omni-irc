@@ -9,6 +9,7 @@ module type CLIENT = sig
     t -> ?filter:string -> ?limit:int -> unit -> unit Lwt.t
   val channel_show :
     t -> string -> unit Lwt.t
+  val whois_request : t -> string -> unit Lwt.t
 end
 
 module Make (C : CLIENT) = struct
@@ -28,6 +29,12 @@ module Make (C : CLIENT) = struct
     let do_names (c:ctx) = function
       | []      -> C.send_raw c "NAMES\r\n"
       | ch :: _ -> C.send_raw c (Printf.sprintf "NAMES %s\r\n" (ensure_channel ch))
+
+    let do_whois (c:ctx) = function
+      | nick :: _ when String.trim nick <> "" ->
+          C.whois_request c (String.trim nick)
+      | _ ->
+          C.notify c "WHOIS requires a <nick>"
 
     let do_raw (c:ctx) (args:string list) =
       let line = String.concat " " args in
@@ -87,6 +94,7 @@ module Make (C : CLIENT) = struct
         | Cmd_key.Privmsg   -> do_privmsg
         | Cmd_key.Get_list  -> do_get_list
         | Cmd_key.Channel   -> do_channel
+        | Cmd_key.WhoIs     -> do_whois
         | Cmd_key.Custom _  -> (fun _ _ -> Lwt.return_unit)
       in
       Lwt.catch (fun () -> f c args) (fun _ -> Lwt.return_unit)

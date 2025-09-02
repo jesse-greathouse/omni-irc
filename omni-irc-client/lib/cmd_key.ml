@@ -8,6 +8,7 @@ type t =
   | Privmsg
   | Get_list
   | Channel
+  | WhoIs
   | Custom of string
 
 let of_string s =
@@ -19,6 +20,8 @@ let of_string s =
   | "PRIVMSG" -> Privmsg
   | "GET_LIST" -> Get_list
   | "CHANNEL"  -> Channel
+  | "WHOIS"   -> WhoIs
+  | "USER"    -> WhoIs
   | other   -> Custom other
 
 let to_string = function
@@ -29,4 +32,5 @@ let to_string = function
   | Privmsg   -> "PRIVMSG"
   | Get_list  -> "GET_LIST"
   | Channel   -> "CHANNEL"
+  | WhoIs     -> "WHOIS"
   | Custom s  -> s
