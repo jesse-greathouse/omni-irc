@@ -7,6 +7,8 @@ module type CLIENT = sig
   val notify   : t -> string -> unit Lwt.t
   val list_request :
     t -> ?filter:string -> ?limit:int -> unit -> unit Lwt.t
+  val channel_show :
+    t -> string -> unit Lwt.t
 end
 
 module Make (C : CLIENT) = struct
@@ -67,6 +69,14 @@ module Make (C : CLIENT) = struct
       in
       C.list_request c ?filter:filter_opt ?limit:limit_opt ()
 
+    (* /channel <#ch> — required arg *)
+    let do_channel (c:ctx) = function
+      | ch :: _ ->
+          let ch = ensure_channel ch in
+          C.channel_show c ch
+      | [] ->
+          C.notify c "CHANNEL requires a channel argument"
+
     let dispatch _t (c:ctx) ~key ~args =
       let f =
         match key with
@@ -76,6 +86,7 @@ module Make (C : CLIENT) = struct
         | Cmd_key.Nick      -> do_nick
         | Cmd_key.Privmsg   -> do_privmsg
         | Cmd_key.Get_list  -> do_get_list
+        | Cmd_key.Channel   -> do_channel
         | Cmd_key.Custom _  -> (fun _ _ -> Lwt.return_unit)
       in
       Lwt.catch (fun () -> f c args) (fun _ -> Lwt.return_unit)

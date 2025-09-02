@@ -99,6 +99,7 @@ let () =
         let join     = Client.join
         let notify   = Client.notify
         let quit     = Client.quit
+        let channel_set_topic c ~ch ~topic = Client.channel_set_topic c ~ch ~topic
         let chanlist_upsert c ~name ~num_users ~topic =
           Client.channel_list_upsert c ~name ~num_users ~topic; Lwt.return_unit
         let get_channels c =

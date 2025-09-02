@@ -191,13 +191,27 @@ let set_to_list (s : Channel.StringSet.t) : string list =
   Channel.StringSet.elements s
 
 let json_of_channel (ch : Channel.t) : Yojson.Safe.t =
+  let max_emit = 1000 in (* tune as you like *)
+  let take_with_more n xs =
+    let rec take k acc = function
+      | [] -> (List.rev acc, 0)
+      | _ when k = 0 -> (List.rev acc, List.length xs - List.length acc)
+      | x::tl -> take (k-1) (x::acc) tl
+    in
+    let (front, more) = take n [] xs in
+    if more > 0 then front @ [Printf.sprintf "… (%d more)" more] else front
+  in
+  let list_json xs = `List (List.map (fun u -> `String u) xs) in
+  let users  = take_with_more max_emit (set_to_list ch.users) in
+  let ops    = take_with_more max_emit (set_to_list ch.ops) in
+  let voices = take_with_more max_emit (set_to_list ch.voices) in
   `Assoc [
-    ("name",   `String (Channel.to_wire ch));                 (* display/wire name (key) *)
-    ("key",    `String (Channel.key_of_name ch.name));        (* canonical, sans '#' *)
+    ("name",   `String (Channel.to_wire ch));
+    ("key",    `String (Channel.key_of_name ch.name));
     ("topic",  (match ch.topic with Some s -> `String s | None -> `Null));
-    ("users",  `List (List.map (fun u -> `String u) (set_to_list ch.users)));
-    ("ops",    `List (List.map (fun u -> `String u) (set_to_list ch.ops)));
-    ("voices", `List (List.map (fun u -> `String u) (set_to_list ch.voices)));
+    ("users",  list_json users);
+    ("ops",    list_json ops);
+    ("voices", list_json voices);
   ]
 
 let assoc_of_channels ?only (m : Channel.t SMap.t) : Yojson.Safe.t =
@@ -258,6 +272,22 @@ let join t ch =
   emit_channels_upsert t ~names:[ch] >>= fun () ->
   send_raw t (Printf.sprintf "JOIN %s\r\n" (Channel.wire_of_name ch))
 
+(* Emit a single-channel blob for UI consumption *)
+let emit_channel_info (t : t) ~name : unit Lwt.t =
+  match channel_find t name with
+  | None ->
+      notify t
+        (Printf.sprintf "You are not in %s" (Channel.wire_of_name name))
+  | Some ch ->
+      let payload =
+        `Assoc [
+          ("type",    `String "channel");
+          ("ts",      `Float (Unix.gettimeofday ()));
+          ("channel", json_of_channel ch);
+        ]
+      in
+      emit_client_blob t payload
+
 (* New flow: /list becomes “request”, synchronous dump if cached, otherwise LIST and dump on 323 *)
 let list_request (t : t) ?filter ?limit () : unit Lwt.t =
   let now = Unix.gettimeofday () in
@@ -287,6 +317,8 @@ module Default_cmd = Cmd_core.Make(struct
   let join     = join
   let notify   = notify
   let list_request = list_request
+  let channel_show (c:client_ctx) (ch:string) =
+    emit_channel_info c ~name:ch
 end)
 
 let default_cmd () : cmd_pack =
@@ -501,3 +533,11 @@ let member_part (t : t) ~ch ~nick ~reason:_ : unit Lwt.t =
       let ch' = Channel.remove_all ch_obj user_key in
       t.channels <- SMap.add kch ch' t.channels;
       emit_channels_upsert t ~names:[ch])
+
+(* Set/replace a channel's topic and upsert to UI *)
+let channel_set_topic (t : t) ~ch ~topic : unit Lwt.t =
+  let kch   = channel_key_of ch in
+  let chobj = channel_ensure t ch in
+  let ch'   = Channel.set_topic chobj (Some topic) in
+  t.channels <- SMap.add kch ch' t.channels;
+  emit_channels_upsert t ~names:[ch]

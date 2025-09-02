@@ -8,6 +8,7 @@ type t =
   | Nick
   | Privmsg
   | Get_list
+  | Channel
   | Custom of string  (** catch-all / extension point *)
 
 val of_string : string -> t

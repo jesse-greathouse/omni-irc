@@ -8,6 +8,7 @@ module type CLIENT = sig
   val join     : t -> string -> unit Lwt.t
   val notify   : t -> string -> unit Lwt.t
   val quit     : t -> unit Lwt.t
+  val channel_set_topic : t -> ch:string -> topic:string -> unit Lwt.t
   val chanlist_upsert :
     t -> name:string -> num_users:int -> topic:string option -> unit Lwt.t
   val get_channels : t -> unit Lwt.t
@@ -102,6 +103,20 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
         (match ch_opt with Some ch -> C.names_completed c ch | None -> Lwt.return_unit)
     | _ -> Lwt.return_unit
 
+  (* 332 RPL_TOPIC: update the channel topic *)
+  let h_rpl_topic (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Other ("332", params, topic_opt) ->
+        let ch_opt =
+          match params with
+          | _me :: ch :: _ -> Some ch
+          | _              -> None
+        in
+        (match (ch_opt, topic_opt) with
+         | (Some ch, Some topic) -> C.channel_set_topic c ~ch ~topic
+         | _ -> Lwt.return_unit)
+    | _ -> Lwt.return_unit
+
   (* 376 RPL_ENDOFMOTD: no auto /LIST on connect *)
   let h_end_of_motd _ev _c = Lwt.return_unit
 
@@ -145,6 +160,7 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
     | _ -> Lwt.return_unit
 
   let register_defaults eng =
+    E.on eng "332"           h_rpl_topic;
     E.on eng "PING"          h_ping;
     E.on eng "INVITE"        h_invite_join;
     E.on eng "INVITE"        h_invite_notify;

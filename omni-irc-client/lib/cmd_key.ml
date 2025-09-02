@@ -7,6 +7,7 @@ type t =
   | Nick
   | Privmsg
   | Get_list
+  | Channel
   | Custom of string
 
 let of_string s =
@@ -17,6 +18,7 @@ let of_string s =
   | "NICK"  -> Nick
   | "PRIVMSG" -> Privmsg
   | "GET_LIST" -> Get_list
+  | "CHANNEL"  -> Channel
   | other   -> Custom other
 
 let to_string = function
@@ -26,4 +28,5 @@ let to_string = function
   | Nick      -> "NICK"
   | Privmsg   -> "PRIVMSG"
   | Get_list  -> "GET_LIST"
+  | Channel   -> "CHANNEL"
   | Custom s  -> s

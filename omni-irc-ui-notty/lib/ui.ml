@@ -36,6 +36,7 @@ type t = {
   rx_acc    : Buffer.t;
   chanlist  : chan_entry array ref;
   channels  : ui_channel SMap.t ref;  (* keyed by wire name *)
+  draw_lock : Lwt_mutex.t;            (* serialize Notty draws *)
 }
 
 let create () =
@@ -50,6 +51,7 @@ let create () =
     rx_acc = Buffer.create 4096;
     chanlist = ref [||];
     channels = ref SMap.empty;
+    draw_lock = Lwt_mutex.create ();
   }
 
 (* helpers *)
@@ -126,20 +128,6 @@ let ensure_valid_utf8 (s : string) : string =
   in
   go 0
 
-let sanitize_line (s : string) =
-  (* First remove CR/TAB and map C0 control chars to spaces to avoid weird control effects *)
-  let s =
-    String.map
-      (fun c ->
-        match c with
-        | '\r' | '\t' -> ' '
-        | c when Char.code c < 0x20 -> ' '
-        | _ -> c)
-      s
-  in
-  let s = strip_mirc_codes s in
-  ensure_valid_utf8 s
-
 let endswith (s:string) (ch:char) =
   let n = String.length s in
   n > 0 && s.[n - 1] = ch
@@ -179,13 +167,109 @@ let reflow width (lines:string list) = List.concat_map (wrap_line width) lines
 
 let clamp a x b = max a (min x b)
 
-(* drawing *)
+let repeat_string (s:string) (n:int) : string =
+  let n = max 0 n in
+  let b = Buffer.create (n * String.length s) in
+  for _ = 1 to n do Buffer.add_string b s done;
+  Buffer.contents b
 
-let redraw t =
+let center_in_width (w:int) (s:string) : string =
+  let len = String.length s in
+  if len >= w then s
+  else String.make ((w - len) / 2) ' ' ^ s
+
+let chop width s =
+  let n = String.length s in
+  let rec go i acc =
+    if i >= n then List.rev acc
+    else
+      let len = min width (n - i) in
+      go (i + len) (String.sub s i len :: acc)
+  in
+  go 0 []
+
+let word_wrap width (words:string list) : string list =
+  let rec emit cur_len cur acc = function
+    | [] ->
+        let acc = if cur = "" then acc else cur :: acc in
+        List.rev acc
+    | w :: ws ->
+        let wl = String.length w in
+        if wl > width then
+          (* break long word, but keep current line first *)
+          let acc = if cur = "" then acc else cur :: acc in
+          let pieces = chop width w in
+          emit 0 "" acc (pieces @ ws)
+        else if cur = "" then
+          emit wl w acc ws
+        else if cur_len + 1 + wl <= width then
+          emit (cur_len + 1 + wl) (cur ^ " " ^ w) acc ws
+        else
+          emit wl w (cur :: acc) ws
+  in
+  emit 0 "" [] words
+
+let boxed_section_lines ~w ~title ~items : string list =
+  let w = max 20 w in
+  let margin_lr = 2 in
+  (* total box width excluding the left/right margin spaces *)
+  let box_w = max 12 (w - (2 * margin_lr)) in
+  let inner_pad = 1 in
+  let content_w = max 1 (box_w - 2 (*borders*) - 2 * inner_pad) in
+  let text_items = if items = [] then [ "(none)" ] else items in
+  let lines =
+    word_wrap content_w text_items
+    |> (fun ws -> if ws = [] then [ "" ] else ws)
+  in
+  let space n = String.make n ' ' in
+  let margin = space margin_lr in
+  let hline  = repeat_string "─" (box_w - 2) in
+  let top    = margin ^ "┌" ^ hline ^ "┐" in
+  let body =
+    List.map
+      (fun l ->
+        let pad = space (max 0 (content_w - String.length l)) in
+        margin ^ "│" ^ space inner_pad ^ l ^ pad ^ space inner_pad ^ "│")
+      lines
+  in
+  let bottom = margin ^ "└" ^ hline ^ "┘" in
+  [
+    "";                               (* top vertical margin *)
+    center_in_width w (title ^ ":");  (* header centered *)
+    top
+  ]
+  @ body
+  @ [ bottom; "" ]                    (* bottom vertical margin *)
+
+let sanitize_line (s : string) =
+  (* First remove CR/TAB and map C0 control chars to spaces to avoid weird control effects *)
+  let s =
+    String.map
+      (fun c ->
+        match c with
+        | '\r' | '\t' -> ' '
+        | c when Char.code c < 0x20 -> ' '
+        | _ -> c)
+      s
+  in
+  let s = strip_mirc_codes s in
+  ensure_valid_utf8 s
+
+let push_output_lines t (ls : string list) =
+  let ls = List.map sanitize_line ls in
+  let combined = !(t.lines) @ ls in
+  let n = List.length combined in
+  t.lines :=
+    if n <= max_lines then combined
+    else drop (n - max_lines) combined
+
+(* drawing (internal) *)
+
+let render t =
   let open Notty in
   let open Notty_lwt in
-  Lwt.catch
-    (fun () ->
+   Lwt.catch
+     (fun () ->
       let w, h = Term.size t.term in
       let w = max 1 w in
       let h = max 2 h in
@@ -231,6 +315,9 @@ let redraw t =
     (fun _exn ->
       (* Swallow Notty drawing errors; keep terminal healthy. Optionally log to a ring buffer. *)
       Lwt.return_unit)
+
+let redraw t =
+  Lwt_mutex.with_lock t.draw_lock (fun () -> render t)
 
 let push_output_line t s =
   let s = sanitize_line s in
@@ -310,15 +397,52 @@ let handle_client_blob (t : t) (json_line : string) =
               max m (String.length (string_of_int e.num_users))) 5 items in
           let header = Printf.sprintf "%-*s  %*s  %s" max_name "Channel" max_users "Users" "Topic" in
           let sep = String.make (max_name + 2 + max_users + 2 + 5) '-' in
-          push_output_line t (Printf.sprintf "(chanlist: %d entries total)" (Array.length entries));
-          push_output_line t header;
-          push_output_line t sep;
-          List.iter
-            (fun (e : chan_entry) ->
-              let topic = match e.topic with Some s -> s | None -> "" in
-              push_output_line t
-                (Printf.sprintf "%-*s  %*d  %s" max_name e.name max_users e.num_users topic))
-            items;
+          let rows =
+            List.map
+              (fun (e : chan_entry) ->
+                let topic = match e.topic with Some s -> s | None -> "" in
+                Printf.sprintf "%-*s  %*d  %s" max_name e.name max_users e.num_users topic)
+              items
+          in
+          push_output_lines t
+            (Printf.sprintf "(chanlist: %d entries total)" (Array.length entries)
+            :: header :: sep :: rows);
+          true
+      | `String "channel" ->
+          let ch = JU.member "channel" j in
+          let to_str_list field =
+            match JU.member field ch with
+            | `List xs ->
+                xs |> List.filter_map (function `String s -> Some s | _ -> None)
+            | _ -> []
+          in
+          (* Basic two-line summary *)
+          let topic =
+            JU.member "topic" ch |> JU.to_string_option |> Option.value ~default:"(no topic set)"
+          in
+          let name =
+            JU.member "name" ch |> JU.to_string_option |> Option.value ~default:"#(unknown)"
+          in
+          let users  = to_str_list "users"  in
+          let ops    = to_str_list "ops"    in
+          let voices = to_str_list "voices" in
+
+          (* Ignore the optional “... / … (N more)” truncation marker when counting *)
+          let starts_with s prefix =
+            let ls = String.length s and lp = String.length prefix in
+            ls >= lp && String.sub s 0 lp = prefix
+          in
+          let not_ellipsis s =
+            not (starts_with s "…" || starts_with s "...")
+          in
+          let count xs = List.length (List.filter not_ellipsis xs) in
+          let n_users  = count users in
+          let n_ops    = count ops in
+          let n_voice  = count voices in
+
+          push_output_lines t
+            [ Printf.sprintf "%s %d online, %d op, %d voice" name n_users n_ops n_voice;
+              "Topic " ^ topic ];
           true
       | `String "channels" ->
           let op = JU.member "op" j |> JU.to_string_option |> Option.value ~default:"upsert" in
@@ -350,9 +474,9 @@ let handle_client_blob (t : t) (json_line : string) =
               let msg =
                 match op, parsed with
                 | ("upsert", [(_k, ch)]) ->
-                    Printf.sprintf "(channels upsert: %s)" ch.name
+                    Printf.sprintf "(channel updating: %s)" ch.name
                 | _ ->
-                    Printf.sprintf "(channels %s: %d item%s)"
+                    Printf.sprintf "(channel %s: %d item%s)"
                       op (List.length parsed) (if List.length parsed = 1 then "" else "s")
               in
               push_output_line t msg; true
@@ -388,7 +512,7 @@ let feed_chunk t (chunk : string) =
   let rest = if ends_with_nl then "" else last in
   Buffer.clear t.rx_acc;
   Buffer.add_string t.rx_acc rest;
-  List.iter (fun l -> push_output_line t (strip_cr l)) complete
+  push_output_lines t (List.map strip_cr complete)
 
 let scroll_by t delta =
   let open Notty_lwt in

@@ -55,6 +55,7 @@ val send_raw : t -> string -> unit Lwt.t
 val join     : t -> string -> unit Lwt.t
 val notify   : t -> string -> unit Lwt.t
 val quit     : t -> unit Lwt.t
+val channel_set_topic : t -> ch:string -> topic:string -> unit Lwt.t
 
 val cmd       : t -> key:Cmd_key.t -> args:string list -> unit Lwt.t
 val cmd_async : t -> key:Cmd_key.t -> args:string list -> unit
@@ -104,6 +105,10 @@ val evict_user : t -> string -> unit Lwt.t
 val emit_channels_snapshot : t -> unit Lwt.t
 val emit_channels_upsert   : t -> names:string list -> unit Lwt.t
 val emit_channels_remove   : t -> names:string list -> unit Lwt.t
+
+(** Emit a single-channel CLIENT blob (type = "channel") for [name].
+    If the client is not in the channel, a user-facing error is notified. *)
+val emit_channel_info : t -> name:string -> unit Lwt.t
 
 (** NAMES 353/366 helpers used by core handlers *)
 val names_prepare   : t -> string -> unit Lwt.t

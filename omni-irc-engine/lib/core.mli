@@ -6,6 +6,7 @@ module type CLIENT = sig
   val join     : t -> string -> unit Lwt.t
   val notify   : t -> string -> unit Lwt.t
   val quit     : t -> unit Lwt.t
+  val channel_set_topic : t -> ch:string -> topic:string -> unit Lwt.t
 
   val chanlist_upsert :
     t -> name:string -> num_users:int -> topic:string option -> unit Lwt.t
