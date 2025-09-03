@@ -118,6 +118,8 @@ let () =
         let whois_actual   = Client.whois_actual
         let whois_secure   = Client.whois_secure
         let whois_complete = Client.whois_complete
+        let channel_mode_change = Client.channel_mode_change
+        let user_mode_change    = Client.user_mode_change
       end)
     in
     Core_for_client.register_defaults eng;

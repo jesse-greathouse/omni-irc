@@ -21,6 +21,19 @@ type whois = {
   secure      : bool option;         (** RPL_WHOISSECURE / 671 *)
 }
 
+(** Common IRC mode markers as constants (avoid naked strings). *)
+module Mode : sig
+  val operator_mode  : string 
+  val voice_mode     : string
+  val halfop_mode    : string
+  val owner_mode     : string
+  val admin_mode     : string
+  val invisible_mode : string
+end
+
+(** Simple map for per-channel modes on a user. Keys are normalized channel names. *)
+module StringMap : Map.S with type key = string
+
 (** Authoritative user object (single source of truth per client). *)
 type t = {
   mutable nick      : string;          (** last-seen display casing for nick *)
@@ -30,10 +43,15 @@ type t = {
   mutable account   : string option;   (** logged-in services account *)
   mutable away      : bool option;     (** away flag if known *)
   mutable whois     : whois option;    (** cached WHOIS payload *)
+  mutable modes     : string list;     (** global user modes, e.g. ["i"] *)
+  mutable channel_modes : string list StringMap.t; (** per-channel modes, e.g. k->["o";"v"] *)
 }
 
 val make : ?real_name:string -> ?ident:string -> ?host:string ->
-            ?account:string -> ?away:bool -> ?whois:whois -> string -> t
+            ?account:string -> ?away:bool -> ?whois:whois ->
+            ?modes:string list ->
+            ?channel_modes:string list StringMap.t ->
+            string -> t
 
 (** Optional: keep the old containers for non-channel use cases. *)
 module Ord : sig

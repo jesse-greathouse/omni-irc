@@ -27,6 +27,17 @@ type whois = {
   secure      : bool option;
 }
 
+module Mode = struct
+  let operator_mode  = "o"
+  let voice_mode     = "v"
+  let halfop_mode    = "h"
+  let owner_mode     = "q"
+  let admin_mode     = "a"
+  let invisible_mode = "i"
+end
+
+module StringMap = Map.Make(String)
+
 type t = {
   mutable nick      : string;
   mutable real_name : string option;
@@ -35,10 +46,13 @@ type t = {
   mutable account   : string option;
   mutable away      : bool option;
   mutable whois     : whois option;
+  mutable modes     : string list;
+  mutable channel_modes : string list StringMap.t;
 }
 
-let make ?real_name ?ident ?host ?account ?away ?whois nick =
-  { nick; real_name; ident; host; account; away; whois }
+let make ?real_name ?ident ?host ?account ?away ?whois
+          ?(modes=[]) ?(channel_modes=StringMap.empty) nick =
+  { nick; real_name; ident; host; account; away; whois; modes; channel_modes }
 
 module Ord = struct
   type nonrec t = t

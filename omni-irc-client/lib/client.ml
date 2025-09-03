@@ -161,34 +161,118 @@ let user_ensure t nick =
       t.users <- SMap.add k u t.users;
       u
 
+let strip_mirc_codes (s : string) =
+  let len = String.length s in
+  let b = Bytes.create len in
+  let is_digit i =
+    i < len && let c = s.[i] in c >= '0' && c <= '9'
+  in
+  let rec eat_digits i n =
+    if n = 0 || not (is_digit i) then i else eat_digits (i+1) (n-1)
+  in
+  let skip_color_params i =
+    let i = eat_digits i 2 in
+    if i < len && s.[i] = ',' then eat_digits (i+1) 2 else i
+  in
+  let rec loop i j =
+    if i >= len then Bytes.sub_string b 0 j
+    else
+      let c = s.[i] in
+      let code = Char.code c in
+      if code = 0x02 || code = 0x0F || code = 0x16 || code = 0x1D || code = 0x1F then
+        loop (i+1) j
+      else if code = 0x03 then
+        let i' = skip_color_params (i+1) in
+        loop i' j
+      else (
+        Bytes.set b j c;
+        loop (i+1) (j+1)
+      )
+  in
+  loop 0 0
+
+(* Ensure valid UTF-8; replace bad sequences with U+FFFD *)
+let ensure_valid_utf8 (s : string) : string =
+  let len = String.length s in
+  let b = Buffer.create (len + 8) in
+  let add_repl () = Buffer.add_string b "\xEF\xBF\xBD" in
+  let byte i = Char.code s.[i] in
+  let is_cont i = i < len && (byte i land 0xC0) = 0x80 in
+  let rec go i =
+    if i >= len then Buffer.contents b else
+    let c = byte i in
+    if c < 0x80 then (Buffer.add_char b s.[i]; go (i+1))
+    else if c < 0xC2 then (add_repl (); go (i+1))
+    else if c < 0xE0 then
+      if is_cont (i+1) then (Buffer.add_string b (String.sub s i 2); go (i+2))
+      else (add_repl (); go (i+1))
+    else if c < 0xF0 then
+      if is_cont (i+1) && is_cont (i+2) then (Buffer.add_string b (String.sub s i 3); go (i+3))
+      else (add_repl (); go (i+1))
+    else if c < 0xF5 then
+      if is_cont (i+1) && is_cont (i+2) && is_cont (i+3) then
+        (Buffer.add_string b (String.sub s i 4); go (i+4))
+      else (add_repl (); go (i+1))
+    else (add_repl (); go (i+1))
+  in
+  go 0
+
+(* Strip raw control chars (except \n, \r, \t), then remove mIRC codes, then fix UTF-8 *)
+let sanitize_for_json (s : string) : string =
+  let s =
+    String.map
+      (fun c ->
+        if Char.code c < 0x20 && c <> '\n' && c <> '\r' && c <> '\t'
+        then ' '
+        else c)
+      s
+  in
+  ensure_valid_utf8 (strip_mirc_codes s)
+
+let opt_map f = function None -> None | Some x -> Some (f x)
+
 let json_of_user (u : User.t) : Yojson.Safe.t =
+  let s  = sanitize_for_json in
+  let so = opt_map s in
   let who =
     match u.whois with
     | None -> `Null
     | Some w ->
         `Assoc [
-          ("user",        (match w.user with Some x -> `String x | None -> `Null));
-          ("host",        (match w.host with Some x -> `String x | None -> `Null));
-          ("realname",    (match w.realname with Some x -> `String x | None -> `Null));
-          ("server",      (match w.server with Some x -> `String x | None -> `Null));
-          ("server_info", (match w.server_info with Some x -> `String x | None -> `Null));
-          ("account",     (match w.account with Some x -> `String x | None -> `Null));
-          ("channels",    `List (List.map (fun s -> `String s) w.channels));
+          ("user",        (match so w.user        with Some x -> `String x | None -> `Null));
+          ("host",        (match so w.host        with Some x -> `String x | None -> `Null));
+          ("realname",    (match so w.realname    with Some x -> `String x | None -> `Null));
+          ("server",      (match so w.server      with Some x -> `String x | None -> `Null));
+          ("server_info", (match so w.server_info with Some x -> `String x | None -> `Null));
+          ("account",     (match so w.account     with Some x -> `String x | None -> `Null));
+          ("channels",    `List (List.map (fun c -> `String (s c)) w.channels));
           ("idle_secs",   (match w.idle_secs with Some x -> `Int x | None -> `Null));
           ("signon_ts",   (match w.signon_ts with Some x -> `Float x | None -> `Null));
-          ("actual_host", (match w.actual_host with Some x -> `String x | None -> `Null));
+          ("actual_host", (match so w.actual_host with Some x -> `String x | None -> `Null));
           ("secure",      (match w.secure with Some x -> `Bool x | None -> `Null));
         ]
   in
+  let channel_modes_json =
+    let pairs =
+      User.StringMap.bindings u.channel_modes
+      |> List.map (fun (k, ms) ->
+            (Model_channel.wire_of_name k,
+              `List (List.map (fun m -> `String (s m)) ms)))
+    in
+    `Assoc pairs
+  in
   `Assoc [
-    ("nick",        `String u.nick);
-    ("real_name",   (match u.real_name with Some x -> `String x | None -> `Null));
-    ("ident",       (match u.ident with Some x -> `String x | None -> `Null));
-    ("host",        (match u.host with Some x -> `String x | None -> `Null));
-    ("account",     (match u.account with Some x -> `String x | None -> `Null));
-    ("away",        (match u.away with Some x -> `Bool x | None -> `Null));
-    ("whois",       who);
+    ("nick",      `String (s u.nick));
+    ("real_name", (match so u.real_name with Some x -> `String x | None -> `Null));
+    ("ident",     (match so u.ident     with Some x -> `String x | None -> `Null));
+    ("host",      (match so u.host      with Some x -> `String x | None -> `Null));
+    ("account",   (match so u.account   with Some x -> `String x | None -> `Null));
+    ("away",      (match u.away with Some x -> `Bool x | None -> `Null));
+    ("whois",     who);
+    ("modes",     `List (List.map (fun m -> `String (s m)) u.modes));
+    ("channel_modes", channel_modes_json);
   ]
+
 
 let emit_console_user_upsert (t : t) ~(u : User.t) : unit Lwt.t =
   let payload =
@@ -247,22 +331,23 @@ let get_channels t : Channel_list.t Lwt.t =
   end
 
 let json_of_chanlist ?filter ?limit (t : t) : Yojson.Safe.t =
+  let s = sanitize_for_json in
   let open Channel_list in
   let entries =
     Map.bindings t.chanlist
     |> List.map (fun (_k, e) ->
           `Assoc [
-            ("name",      `String (wire_of_name e.name));
+            ("name",      `String (s (wire_of_name e.name)));
             ("num_users", `Int e.num_users);
-            ("topic",     match e.topic with Some s -> `String s | None -> `Null)
+            ("topic",     match e.topic with Some x -> `String (s x) | None -> `Null);
           ])
   in
   `Assoc [
     ("type",    `String "chanlist");
     ("ts",      `Float (Unix.gettimeofday ()));
     ("entries", `List entries);
-    ("filter",  match filter with Some s -> `String s | None -> `Null);
-    ("limit",   match limit  with Some n -> `Int n    | None -> `Null)
+    ("filter",  match filter with Some x -> `String (s x) | None -> `Null);
+    ("limit",   match limit  with Some n -> `Int n        | None -> `Null);
   ]
 
 let emit_client_blob t (j : Yojson.Safe.t) : unit Lwt.t =
@@ -274,6 +359,7 @@ let set_to_list (s : Channel.StringSet.t) : string list =
   Channel.StringSet.elements s
 
 let json_of_channel (ch : Channel.t) : Yojson.Safe.t =
+  let s = sanitize_for_json in
   let max_emit = 3000 in (* Max Records it can churn *)
   let take_with_more n xs =
     let rec take k acc = function
@@ -284,17 +370,18 @@ let json_of_channel (ch : Channel.t) : Yojson.Safe.t =
     let (front, more) = take n [] xs in
     if more > 0 then front @ [Printf.sprintf "… (%d more)" more] else front
   in
-  let list_json xs = `List (List.map (fun u -> `String u) xs) in
+  let list_json xs = `List (List.map (fun u -> `String (s u)) xs) in
   let users  = take_with_more max_emit (set_to_list ch.users) in
   let ops    = take_with_more max_emit (set_to_list ch.ops) in
   let voices = take_with_more max_emit (set_to_list ch.voices) in
   `Assoc [
-    ("name",   `String (Channel.to_wire ch));
-    ("key",    `String (Channel.key_of_name ch.name));
-    ("topic",  (match ch.topic with Some s -> `String s | None -> `Null));
+    ("name",   `String (s (Channel.to_wire ch)));
+    ("key",    `String (s (Channel.key_of_name ch.name)));
+    ("topic",  (match ch.topic with Some t -> `String (s t) | None -> `Null));
     ("users",  list_json users);
     ("ops",    list_json ops);
     ("voices", list_json voices);
+    ("modes",  `List (List.map (fun m -> `String (s m)) ch.modes));
   ]
 
 let assoc_of_channels ?only (m : Channel.t SMap.t) : Yojson.Safe.t =
@@ -556,7 +643,18 @@ let names_prepare (t : t) (channel : string) : unit Lwt.t =
         voices = Channel.StringSet.empty; }
     in
     t.channels <- SMap.add key cleared t.channels;
-    t.names_refreshing <- CSet.add key t.names_refreshing
+    t.names_refreshing <- CSet.add key t.names_refreshing;
+    (* Clear per-user channel modes for this channel so NAMES can rebuild them *)
+    t.users <-
+      SMap.map
+        (fun (u:User.t) ->
+            let cm =
+              if User.StringMap.mem key u.channel_modes
+              then User.StringMap.remove key u.channel_modes
+              else u.channel_modes
+            in
+            { u with channel_modes = cm })
+        t.users
   end;
   Lwt.return_unit
 
@@ -573,6 +671,22 @@ let names_member (t : t) ~ch ~nick ~status : unit Lwt.t =
     | `User  -> ch1
   in
   t.channels <- SMap.add kch ch2 t.channels;
+  (* Update user's per-channel modes (e.g., @ -> "o", + -> "v") *)
+  let u = user_ensure t nick in
+  let open User in
+  let add uniq xs = if List.exists ((=) uniq) xs then xs else xs @ [uniq] in
+  let mode_opt =
+    match status with
+    | `Op    -> Some Mode.operator_mode
+    | `Voice -> Some Mode.voice_mode
+    | `User  -> None
+  in
+  (match mode_opt with
+    | None -> ()
+    | Some m ->
+      let prev = match StringMap.find_opt kch u.channel_modes with None -> [] | Some xs -> xs in
+      let next = add m prev in
+      u.channel_modes <- StringMap.add kch next u.channel_modes);
   Lwt.return_unit
 
 let names_completed (t : t) (channel : string) : unit Lwt.t =
@@ -595,12 +709,16 @@ let member_join (t : t) ~ch ~nick : unit Lwt.t =
 let member_part (t : t) ~ch ~nick ~reason:_ : unit Lwt.t =
   let user_key = user_key_of_nick nick in
   let kch = channel_key_of ch in
-  (match SMap.find_opt kch t.channels with
-    | None -> Lwt.return_unit
-    | Some ch_obj ->
+  match SMap.find_opt kch t.channels with
+  | None -> Lwt.return_unit
+  | Some ch_obj ->
       let ch' = Channel.remove_all ch_obj user_key in
       t.channels <- SMap.add kch ch' t.channels;
-      emit_channels_upsert t ~names:[ch])
+      (match user_find t nick with
+        | None -> ()
+        | Some u ->
+          u.channel_modes <- User.StringMap.remove kch u.channel_modes);
+      emit_channels_upsert t ~names:[ch]
 
 (* Set/replace a channel's topic and upsert to UI *)
 let channel_set_topic (t : t) ~ch ~topic : unit Lwt.t =
@@ -674,3 +792,159 @@ let whois_complete (t : t) ~nick =
   let _k = user_key_of_nick nick in
   let u = user_ensure t nick in
   emit_console_user_upsert t ~u
+
+(* MODE parsing helpers *)
+let is_status_mode (m : char) =
+  match m with
+  | 'o' | 'v' | 'h' | 'q' | 'a' -> true
+  | _ -> false
+
+let mode_requires_arg_for_channel (sign:char) (m:char) =
+  match m, sign with
+  | ('o'|'v'|'h'|'q'|'a'|'k'|'l'|'b'|'e'|'I'), '+' -> true
+  | ('o'|'v'|'h'|'q'|'a'), '-' -> true
+  | _ -> false
+
+(* NOTE: users_ref has the precise type (User.t SMap.t) ref — fixes the SMap error. *)
+let apply_mode_string_channel
+    ~(ch:Channel.t)
+    ~(kch:string)
+    ~(users_ref:User.t SMap.t ref)
+    ~(modestr:string)
+    ~(args:string list)
+  : Channel.t * User.t list =
+  let sign = ref '+' in
+  let args = ref args in
+  let changed_users = ref [] in
+  let add_user_change u = changed_users := u :: !changed_users in
+
+  let take_arg () =
+    match !args with
+    | a::tl -> args := tl; Some a
+    | [] -> None
+  in
+
+  let add_ch_mode ch m = Channel.add_mode ch (String.make 1 m) in
+  let rem_ch_mode ch m = Channel.remove_mode ch (String.make 1 m) in
+
+  let add_user_status ch m nick =
+    let uk = user_key_of_nick nick in
+    let u =
+      match SMap.find_opt uk !users_ref with
+      | Some u -> u
+      | None ->
+          let u = User.make nick in
+          users_ref := SMap.add uk u !users_ref; u
+    in
+    (* use provided channel key kch (avoid touching record fields) *)
+    let prior = match User.StringMap.find_opt kch u.channel_modes with None -> [] | Some xs -> xs in
+    let mcode =
+      match m with
+      | 'o' -> Some User.Mode.operator_mode
+      | 'v' -> Some User.Mode.voice_mode
+      | 'h' -> Some User.Mode.halfop_mode
+      | 'q' -> Some User.Mode.owner_mode
+      | 'a' -> Some User.Mode.admin_mode
+      | _   -> None
+    in
+    (match mcode with
+     | None -> ()
+     | Some code ->
+         if not (List.exists ((=) code) prior) then
+           u.channel_modes <- User.StringMap.add kch (prior @ [code]) u.channel_modes);
+    add_user_change u;
+    let ch =
+      match m with
+      | 'o' | 'q' | 'a' | 'h' -> Channel.add_op ch uk
+      | 'v'                   -> Channel.add_voice ch uk
+      | _ -> ch
+    in
+    ch
+  in
+
+  let rem_user_status ch m nick =
+    let uk = user_key_of_nick nick in
+    (match SMap.find_opt uk !users_ref with
+     | Some u ->
+         (* use provided channel key kch *)
+         let code_opt =
+           match m with
+           | 'o' -> Some User.Mode.operator_mode
+           | 'v' -> Some User.Mode.voice_mode
+           | 'h' -> Some User.Mode.halfop_mode
+           | 'q' -> Some User.Mode.owner_mode
+           | 'a' -> Some User.Mode.admin_mode
+           | _   -> None
+         in
+         (match code_opt with
+          | None -> ()
+          | Some code ->
+              let prior = match User.StringMap.find_opt kch u.channel_modes with None -> [] | Some xs -> xs in
+              let next  = List.filter ((<>) code) prior in
+              if List.length next <> List.length prior then
+                u.channel_modes <-
+                  (if next = [] then User.StringMap.remove kch u.channel_modes
+                   else User.StringMap.add kch next u.channel_modes);
+              add_user_change u)
+     | None -> ());
+    let ch =
+      match m with
+      | 'o' | 'q' | 'a' | 'h' -> Channel.remove_op ch uk
+      | 'v'                   -> Channel.remove_voice ch uk
+      | _ -> ch
+    in
+    ch
+  in
+
+  let rec loop i ch =
+    if i >= String.length modestr then (ch, List.rev !changed_users)
+    else
+      let c = modestr.[i] in
+      if c = '+' || c = '-' then (sign := c; loop (i+1) ch)
+      else
+        let ch' =
+          if is_status_mode c && mode_requires_arg_for_channel !sign c then
+            match take_arg () with
+            | Some nick when !sign = '+' -> add_user_status ch c nick
+            | Some nick (* '-' *)       -> rem_user_status ch c nick
+            | None                      -> ch
+          else
+            if !sign = '+' then add_ch_mode ch c else rem_ch_mode ch c
+        in
+        loop (i+1) ch'
+  in
+  loop 0 ch
+
+let channel_mode_change (t : t) ~ch ~mode ~args : unit Lwt.t =
+  let kch = channel_key_of ch in
+  let ch_obj = channel_ensure t ch in
+  let users_ref = ref t.users in
+  let (ch', _changed_users) =
+    apply_mode_string_channel ~ch:ch_obj ~kch ~users_ref ~modestr:mode ~args
+  in
+  t.channels <- SMap.add kch ch' t.channels;
+  t.users    <- !users_ref;
+  emit_channels_upsert t ~names:[ch]
+
+let user_mode_change (t : t) ~nick ~mode : unit Lwt.t =
+  let u = user_ensure t nick in
+  let add uniq xs = if List.exists ((=) uniq) xs then xs else xs @ [uniq] in
+  let rec walk i sign modes =
+    if i >= String.length mode then modes
+    else
+      let c = mode.[i] in
+      if c = '+' || c = '-' then walk (i+1) c modes
+      else
+        let mstr = String.make 1 c in
+        let modes' =
+          if sign = '+'
+          then add mstr modes
+          else List.filter ((<>) mstr) modes
+        in
+        walk (i+1) sign modes'
+  in
+  let next = walk 0 '+' u.modes in
+  if next <> u.modes then (
+    u.modes <- next;
+    emit_console_user_upsert t ~u
+  ) else Lwt.return_unit

@@ -8,12 +8,17 @@ type t = {
   users  : StringSet.t;
   ops    : StringSet.t;
   voices : StringSet.t;
+  modes  : string list;  (** channel modes like ["i"; "m"; "n"; ...] *)
 }
 
 val key_of_name : string -> string
 val make : name:string -> t
 
 val set_topic : t -> string option -> t
+
+val set_modes  : t -> string list -> t
+val add_mode   : t -> string -> t
+val remove_mode: t -> string -> t
 
 val add_user   : t -> string -> t
 val add_op     : t -> string -> t

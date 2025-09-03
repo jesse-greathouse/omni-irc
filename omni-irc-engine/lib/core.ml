@@ -35,10 +35,21 @@ module type CLIENT = sig
     t -> nick:string -> unit Lwt.t
   val whois_complete  :
     t -> nick:string -> unit Lwt.t
+
+  val channel_mode_change : t -> ch:string -> mode:string -> args:string list -> unit Lwt.t
+  val user_mode_change    : t -> nick:string -> mode:string -> unit Lwt.t
 end
 
 module Make (P : Parser_intf.S) (C : CLIENT) = struct
   module E = Engine.Make(P)
+
+  let is_channel_target (s : string) =
+    match s with
+    | "" -> false
+    | _ ->
+      match s.[0] with
+      | '#' | '&' | '+' | '!' -> true
+      | _ -> false
 
   let h_ping (ev : P.event) (c : C.t) =
     match P.payload ev with
@@ -244,6 +255,27 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
          | _ -> Lwt.return_unit)
     | _ -> Lwt.return_unit
 
+  let h_mode (ev : P.event) (c : C.t) =
+      match P.payload ev with
+      | P.Other ("MODE", params, trailing) ->
+          begin match params with
+          | target :: mode_str :: rest ->
+              if is_channel_target target
+              then C.channel_mode_change c ~ch:target ~mode:mode_str ~args:rest
+              else C.user_mode_change    c ~nick:target ~mode:mode_str
+          | target :: [] ->
+              (* Some servers may place the mode string in trailing *)
+              begin match trailing with
+              | Some mode_str ->
+                  if is_channel_target target
+                  then C.channel_mode_change c ~ch:target ~mode:mode_str ~args:[]
+                  else C.user_mode_change    c ~nick:target ~mode:mode_str
+              | None -> Lwt.return_unit
+              end
+          | _ -> Lwt.return_unit
+          end
+      | _ -> Lwt.return_unit
+
   let register_defaults eng =
     E.on eng "332"           h_rpl_topic;
     E.on eng "PING"          h_ping;
@@ -259,6 +291,7 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
     E.on eng "KILL"          h_kill;
     E.on eng "JOIN"          h_join;
     E.on eng "PART"          h_part;
+    E.on eng "MODE"          h_mode;
     (* WHOIS numerics *)
     E.on eng "311"           h_whois_311;
     E.on eng "312"           h_whois_312;

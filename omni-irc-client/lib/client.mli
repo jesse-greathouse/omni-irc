@@ -123,6 +123,9 @@ val names_completed : t -> string -> unit Lwt.t
 val member_join : t -> ch:string -> nick:string -> unit Lwt.t
 val member_part : t -> ch:string -> nick:string -> reason:string option -> unit Lwt.t
 
+val channel_mode_change : t -> ch:string -> mode:string -> args:string list -> unit Lwt.t
+val user_mode_change    : t -> nick:string -> mode:string -> unit Lwt.t
+
 (** WHOIS mutation helpers (called by Core) *)
 val whois_basic     : t -> nick:string -> user:string -> host:string -> realname:string option -> unit Lwt.t
 val whois_server    : t -> nick:string -> server:string -> server_info:string option -> unit Lwt.t

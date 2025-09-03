@@ -31,6 +31,10 @@ module type CLIENT = sig
   val whois_actual    : t -> nick:string -> actual_host:string -> unit Lwt.t
   val whois_secure    : t -> nick:string -> unit Lwt.t
   val whois_complete  : t -> nick:string -> unit Lwt.t
+
+  (** Mode tracking *)
+  val channel_mode_change : t -> ch:string -> mode:string -> args:string list -> unit Lwt.t
+  val user_mode_change    : t -> nick:string -> mode:string -> unit Lwt.t
 end
 
 module Make (P : Parser_intf.S) (C : CLIENT) : sig

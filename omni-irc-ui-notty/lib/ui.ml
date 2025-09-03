@@ -457,13 +457,22 @@ let handle_client_blob (t : t) (json_line : string) =
           let nick =
             JU.member "nick" u |> JU.to_string_option |> Option.value ~default:"(unknown)"
           in
+          (* Safe accessors for when whois is null or non-object *)
           let who =
             match JU.member "whois" u with
             | `Assoc _ as x -> x
             | _ -> `Null
           in
+          let member_safely (field : string) (obj : Yojson.Safe.t) : Yojson.Safe.t =
+            match obj with
+            | `Assoc _ -> JU.member field obj
+            | _ -> `Null
+          in
+          let get_who_field name =
+            member_safely name who
+          in
           let wu name =
-            match JU.member name who with
+            match get_who_field name with
             | `String s -> Some s
             | `Bool b -> Some (if b then "true" else "false")
             | `Null -> None
@@ -484,9 +493,11 @@ let handle_client_blob (t : t) (json_line : string) =
             whois_account     = wu "account";
             whois_actual_host = wu "actual_host";
             whois_secure      =
-              (match JU.member "secure" who with `Bool b -> Some b | _ -> None);
+              (match get_who_field "secure" with `Bool b -> Some b | _ -> None);
           } in
           let key = normalize_nick_for_key nick in
+          (* Did this user already exist before this upsert? *)
+          let existed = SMap.mem key !(t.users) in
           t.users := SMap.add key uiu !(t.users);
 
           (* Compose a succinct note about updated keys *)
@@ -507,9 +518,14 @@ let handle_client_blob (t : t) (json_line : string) =
               ("whois.secure",      Option.map string_of_bool uiu.whois_secure);
             ]
           in
+          let detail =
+            if not existed then "(new)"
+            else if updated = "" then "(no fields)"
+            else updated
+          in
           push_output_line t
             (Printf.sprintf "(Updating user %s: %s)"
-               nick (if updated = "" then "(no fields)" else updated));
+              nick detail);
           true
       | `String "channel" ->
           let ch = JU.member "channel" j in
@@ -599,9 +615,29 @@ let handle_client_blob (t : t) (json_line : string) =
               false
           end
       | _ -> false
-  with _ -> false
-in
-if not ok then push_output_line t "(CLIENT blob ignored: unrecognized or invalid JSON)"
+    with ex ->
+      (* On any parse failure, show a helpful debug snippet. *)
+      let err =
+        match ex with
+        | Yojson.Json_error m -> "Yojson.Json_error: " ^ m
+        | _ -> Printexc.to_string ex
+      in
+      let max_len = 512 in
+      let len = String.length json_line in
+      let snippet =
+        if len <= max_len then json_line
+        else String.sub json_line 0 max_len ^ "…"
+      in
+      (* Don’t sanitize: we want to see the raw bytes that broke parsing. *)
+      push_output_lines t [
+        "(CLIENT blob ignored: unrecognized or invalid JSON)";
+        "└─ Yojson error: " ^ err;
+        "└─ raw payload (first 512 chars):";
+        snippet
+      ];
+      false
+  in
+if not ok then ()
 
 let feed_chunk t (chunk : string) =
   Buffer.add_string t.rx_acc chunk;
