@@ -10,6 +10,7 @@ type t =
   | Get_list
   | Channel
   | WhoIs
+  | Self
   | Custom of string  (** catch-all / extension point *)
 
 val of_string : string -> t

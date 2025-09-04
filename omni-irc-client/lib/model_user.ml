@@ -34,6 +34,9 @@ module Mode = struct
   let owner_mode     = "q"
   let admin_mode     = "a"
   let invisible_mode = "i"
+  let secure_connection  = "Z"
+  let receive_wallops = "w"
+
 end
 
 module StringMap = Map.Make(String)

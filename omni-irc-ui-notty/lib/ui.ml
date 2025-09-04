@@ -44,7 +44,7 @@ type ui_user = {
 }
 
 (* Normalize a nick to a stable map key:
-   - strip a single leading status marker (@ + % & ~)
+    - strip a single leading status marker (@ + % & ~)
    - lowercase *)
 let normalize_nick_for_key (s : string) : string =
   let s =
@@ -67,6 +67,7 @@ type t = {
   chanlist  : chan_entry array ref;
   users     : ui_user SMap.t ref;
   channels  : ui_channel SMap.t ref;  (* keyed by wire name *)
+  self_user_key : string option ref;  (* normalized nick key for “self” user *)
   draw_lock : Lwt_mutex.t;            (* serialize Notty draws *)
 }
 
@@ -83,6 +84,7 @@ let create () =
     chanlist = ref [||];
     users = ref SMap.empty; 
     channels = ref SMap.empty;
+    self_user_key = ref None;
     draw_lock = Lwt_mutex.create ();
   }
 
@@ -364,6 +366,43 @@ let push_output_line t s =
   let n = List.length l in
   if n > max_lines then t.lines := drop (n - max_lines) l
 
+let ui_user_of_user_json (u : Yojson.Safe.t) : ui_user =
+  let open JU in
+  let get_opt name = member name u |> to_string_option in
+  let get_bool_opt name =
+    match member name u with `Bool b -> Some b | _ -> None
+  in
+  let nick = member "nick" u |> to_string_option |> Option.value ~default:"(unknown)" in
+  let who =
+    match member "whois" u with
+    | `Assoc _ as x -> x
+    | _ -> `Null
+  in
+  let member_safely field obj = match obj with `Assoc _ -> JU.member field obj | _ -> `Null in
+  let get_who_field name = member_safely name who in
+  let wu name =
+    match get_who_field name with
+    | `String s -> Some s
+    | `Bool b -> Some (if b then "true" else "false")
+    | _ -> None
+  in
+  {
+    nick;
+    real_name   = get_opt "real_name";
+    ident       = get_opt "ident";
+    host        = get_opt "host";
+    account     = get_opt "account";
+    away        = get_bool_opt "away";
+    whois_user        = wu "user";
+    whois_host        = wu "host";
+    whois_realname    = wu "realname";
+    whois_server      = wu "server";
+    whois_server_info = wu "server_info";
+    whois_account     = wu "account";
+    whois_actual_host = wu "actual_host";
+    whois_secure      = (match get_who_field "secure" with `Bool b -> Some b | _ -> None);
+  }
+
 (* Now that push_output_line exists, we can safely parse client blobs *)
 let handle_client_blob (t : t) (json_line : string) =
   (* Best-effort parse; on error, show a tiny diagnostic rather than exploding *)
@@ -614,6 +653,37 @@ let handle_client_blob (t : t) (json_line : string) =
           | _ ->
               false
           end
+      | `String "client_user" ->
+          let nick_opt = JU.member "nick" j |> JU.to_string_option in
+          let key_opt  = JU.member "key"  j |> JU.to_string_option in
+          let key =
+            match key_opt, nick_opt with
+            | Some k, _ -> k
+            | None, Some n -> normalize_nick_for_key n
+            | None, None -> ""
+          in
+          t.self_user_key := (if key = "" then None else Some key);
+
+          (* Try to dereference immediately against the UI’s user cache *)
+          let ui_line =
+            match if key = "" then None else SMap.find_opt key !(t.users) with
+            | Some u ->
+                let detail =
+                  kvs_string [
+                    ("ident",     u.ident);
+                    ("host",      u.host);
+                    ("account",   u.account);
+                    ("whois.secure", Option.map string_of_bool u.whois_secure);
+                  ]
+                in
+                if detail = "" then Printf.sprintf "(self: %s)" u.nick
+                else Printf.sprintf "(self: %s %s)" u.nick detail
+            | None ->
+                let shown = Option.value ~default:"(unknown)" nick_opt in
+                "(self: " ^ shown ^ ") (details pending)"
+          in
+          push_output_line t ui_line;
+          true
       | _ -> false
     with ex ->
       (* On any parse failure, show a helpful debug snippet. *)
@@ -718,6 +788,7 @@ let run t ~from_client ~to_client =
               `Cmd ("WHOIS", args)
           | "whois" ->
               `Cmd ("WHOIS", args)
+          | "self" | "whoami" -> `Cmd ("SELF", args)
           | other ->
               `Cmd (String.uppercase_ascii other, args)
           end
@@ -777,7 +848,7 @@ let run t ~from_client ~to_client =
   | UIX.ClientInfo s ->
       let handle_prefixed prefix =
         if String.length s >= String.length prefix
-           && String.sub s 0 (String.length prefix) = prefix
+          && String.sub s 0 (String.length prefix) = prefix
         then Some (String.sub s (String.length prefix) (String.length s - String.length prefix))
         else None
       in

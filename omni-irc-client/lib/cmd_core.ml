@@ -10,6 +10,7 @@ module type CLIENT = sig
   val channel_show :
     t -> string -> unit Lwt.t
   val whois_request : t -> string -> unit Lwt.t
+  val sync_self_user : t -> unit Lwt.t
 end
 
 module Make (C : CLIENT) = struct
@@ -84,6 +85,9 @@ module Make (C : CLIENT) = struct
       | [] ->
           C.notify c "CHANNEL requires a channel argument"
 
+    let do_self (c:ctx) (_args:string list) =
+      C.sync_self_user c
+
     let dispatch _t (c:ctx) ~key ~args =
       let f =
         match key with
@@ -95,6 +99,7 @@ module Make (C : CLIENT) = struct
         | Cmd_key.Get_list  -> do_get_list
         | Cmd_key.Channel   -> do_channel
         | Cmd_key.WhoIs     -> do_whois
+        | Cmd_key.Self      -> do_self
         | Cmd_key.Custom _  -> (fun _ _ -> Lwt.return_unit)
       in
       Lwt.catch (fun () -> f c args) (fun _ -> Lwt.return_unit)

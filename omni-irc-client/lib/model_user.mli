@@ -29,6 +29,8 @@ module Mode : sig
   val owner_mode     : string
   val admin_mode     : string
   val invisible_mode : string
+  val secure_connection : string
+  val receive_wallops : string
 end
 
 (** Simple map for per-channel modes on a user. Keys are normalized channel names. *)

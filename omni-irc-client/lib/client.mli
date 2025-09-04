@@ -57,6 +57,10 @@ val notify   : t -> string -> unit Lwt.t
 val quit     : t -> unit Lwt.t
 val channel_set_topic : t -> ch:string -> topic:string -> unit Lwt.t
 
+(** Singular “self” user support *)
+val set_self_by_nick : t -> string -> unit Lwt.t
+val sync_self_user   : t -> unit Lwt.t
+
 val cmd       : t -> key:Cmd_key.t -> args:string list -> unit Lwt.t
 val cmd_async : t -> key:Cmd_key.t -> args:string list -> unit
 

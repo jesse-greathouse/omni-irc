@@ -12,6 +12,7 @@ module type CLIENT = sig
     unit -> unit Lwt.t
   val channel_show : t -> string -> unit Lwt.t
   val whois_request : t -> string -> unit Lwt.t
+  val sync_self_user : t -> unit Lwt.t 
 end
 
 module Make (C : CLIENT) : sig

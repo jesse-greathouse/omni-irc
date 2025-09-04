@@ -1,66 +1,101 @@
 # Omni-IRC
 
-Omni-IRC is a modular, experimental IRC client written in [OCaml](https://ocaml.org/).
-It’s structured as small libraries (IO backends, connector, engine, UI) plus a thin client executable, so you can mix and match pieces or reuse them in other repos.
+Omni-IRC is a modular, experimental IRC client written in [OCaml](https://ocaml.org/). It’s split into small, composable libraries (IO backends, connector, engine, UI) plus a thin client executable. You can reuse the pieces independently or wire them together as a full terminal client.
 
-## Highlights (current state)
-
-* **Transport backends**
-
-  * `omni-irc-io-tcp` (plain TCP via `lwt.unix`)
-  * `omni-irc-io-tls` (TLS via `tls-lwt`, pure OCaml; CA verification via `ca-certs`)
-  * `omni-irc-io-unixsock` (AF\_UNIX utility module; not used by the default client yet)
-* **Connector functor** (`omni-irc-conn`): turns an IO backend into a uniform `{connect; recv; send; close}` API.
-* **Event engine** (`omni-irc-engine`): tiny dispatcher + minimal parser.
-
-  * Default handlers include **PING → PONG** and **INVITE** (auto-join + notify).
-* **UI** (`omni-irc-ui-notty`): Notty/Lwt TUI with input line, scrollback, and simple keybinds.
-* **One true entrypoint**: `bin/omni` (or `bin/omni.exe` on Windows) is built by Dune and promoted to the repo root `bin/` for easy use—no PATH edits required.
-* **Build info**: `dune build @info` writes an absolute-paths manifest to `./omni-info.txt` for automation.
+📄 **Design & UI/Client contract:** see **[`doc/omni-irc-UI-Client-Contract.pdf`](doc/omni-irc-UI-Client-Contract.pdf)**
 
 ---
 
-## Project layout
+## What’s here (current architecture)
 
-```sh
-omni-irc/
-├── bin/
-│   ├── audit                 # helper script (unrelated to build)
-│   └── dune                  # rules for building bin/omni (+ @info)
-├── dune                      # root dune file (info rule, etc.)
-├── dune-project
-├── LICENSE
-├── README.md
-├── omni-irc-sig/             # tiny shared signatures
-│   └── lib/
-├── omni-irc-conn/            # connector functor over an IO backend
-│   └── lib/
-├── omni-irc-io-tcp/          # TCP backend
-│   └── lib/
-├── omni-irc-io-tls/          # TLS backend (ocaml-tls)
-│   └── lib/
-├── omni-irc-io-unixsock/     # AF_UNIX helper (not used by default client yet)
-│   └── lib/
-├── omni-irc-engine/          # event engine + minimal parser + core handlers
-│   └── lib/
-├── omni-irc-ui/              # UI contracts
-│   └── lib/
-├── omni-irc-ui-notty/        # Notty/Lwt UI implementation
-│   └── lib/
-└── omni-irc-client/          # thin client that wires it all together
-    ├── bin/main.ml
-    └── lib/
-```
+### Core packages
+
+* **`omni-irc-sig`** — tiny shared signatures (notably the IO signature).
+* **IO backends**
+
+  * **`omni-irc-io-tcp`** — plain TCP via `lwt.unix`.
+  * **`omni-irc-io-tls`** — TLS via `tls-lwt` (pure OCaml). CA verification via `ca-certs` (enabled by default).
+  * **`omni-irc-io-unixsock`** — AF\_UNIX helper (simple single-consumer bridge).
+* **`omni-irc-conn`** — **connector functor** that turns any IO backend into a uniform `{ connect; recv; send; close }` API.
+* **`omni-irc-engine`** — parser + event dispatcher + default core handlers.
+
+  * Recognizes and handles:
+
+    * `PING` → `PONG`
+    * `INVITE` → auto-join + notify
+    * `LIST` (`322/323`) → channel list assembly
+    * `NAMES` (`353/366`) → channel membership assembly
+    * `TOPIC` (`332`) → channel topic tracking
+    * `PRIVMSG` (to you) → surface as a notification line
+    * `QUIT`/`KILL`/`JOIN`/`PART` → model updates
+    * `MODE` (user & channel) → mode tracking
+    * `WHOIS` (`311/312/319/338/671/318`) → enrich user model
+* **`omni-irc-ui`** — UI contracts.
+* **`omni-irc-ui-notty`** — Notty/Lwt terminal UI (input line, scrollback, simple keybinds).
+* **`omni-irc-client`** — thin orchestrator:
+
+  * Wires IO ⇄ connector ⇄ engine ⇄ model
+  * Bridges UI commands to client actions
+  * Exports **state snapshots** to the UI via **`CLIENT [JSON]`** meta-lines (one-way, “React-ish” snapshot flow)
+
+### Models (authoritative on the client)
+
+* **Users** — `Model_user.t`
+
+  * Global modes, optional WHOIS cache, **per-channel modes**.
+  * **Singular `self_user`** pointer identifies the connected user (see below).
+* **Channels** — `Model_channel.t`
+
+  * Users/ops/voices sets, topic, channel modes.
+* **Channel List** — `Model_channel_list.t`
+
+  * Map of `LIST` entries (`name`, `num_users`, `topic`).
+
+### One-way state export to UI
+
+The client emits **`CLIENT <json>`** lines to push *snapshots* of state to the UI. The UI keeps its own representation by consuming these snapshots. It **does not** re-emit state back; the UI only “pulls levers” by sending commands to the client.
+
+Currently exported blobs include:
+
+* `{"type":"channels","op":"snapshot" | "upsert" | "remove", ...}`
+* `{"type":"channel",  "channel": { ... } }`
+* `{"type":"chanlist", "entries": [ ... ] }`
+* `{"type":"user","op":"upsert","user": { ... } }` — authoritative user upserts
+* **`{"type":"client_user","op":"pointer"|"upsert", ...}`** — the *self user* (see below)
+
+The Notty UI also accepts `CONSOLE <json>` as an alias for client JSON blobs.
+
+---
+
+## The “self user” flow
+
+The client maintains a **single pointer** `self_user : User.t option` that references the authoritative `User.t` for the **connected identity**.
+
+* On connect (when `--nick` is provided), the client:
+
+  1. Sends `NICK`.
+  2. Sets the pointer via `set_self_by_nick`.
+  3. Emits:
+
+     * a **pointer** message (fast):
+       `{"type":"client_user","op":"pointer","key":"<normalized-nick>","nick":"<display>"}`
+     * an **upsert** (snapshot):
+       `{"type":"client_user","op":"upsert","key":"<normalized-nick>","user":{...}}`
+* The UI stores the key, tries to dereference in its local cache, and shows a one-liner like:
+
+  * `(self: jesse ident=… host=… account=… whois.secure=true)`
+  * If details aren’t cached yet: `(self: jesse) (details pending)`
+* You can trigger a refresh any time with the UI command **`/self`** (alias **`/whoami`**).
 
 ---
 
 ## Requirements
 
-* OCaml **5.3+** (project is currently tested with 5.3.0)
-* dune **3.20+**
-* opam (recommended)
-* For TLS: `tls-lwt`, `x509`, `ca-certs`, `domain-name`, `cstruct`
-* For the TUI: `notty`, `notty.lwt` (Notty is POSIX-oriented)
+* **OCaml 5.3+** (tested with 5.3.0)
+* **dune 3.20+**
+* `opam` (recommended)
+* TLS backend: `tls-lwt`, `x509`, `ca-certs`, `domain-name`, `cstruct`
+* Notty UI: `notty`, `notty.lwt` (POSIX-oriented)
 
 Install deps:
 
@@ -73,46 +108,35 @@ opam install . --deps-only
 
 ## Build
 
-### Build everything (normal Dune build)
+Build everything:
 
 ```sh
 dune build
 ```
 
-### Build the user-facing executable
+Run the main executable directly:
 
 ```sh
-dune build @omni
-# Result (POSIX): bin/omni
-# Result (Windows): bin/omni.exe
+dune exec omni-irc-client
 ```
 
-### Generate absolute-path build info
+(If your environment promotes a wrapper to `bin/`, you can also run `bin/omni` / `bin/omni.exe`. Otherwise, `dune exec` is the simplest.)
+
+Generate absolute-path build info (optional, used by tooling):
 
 ```sh
 dune build @info
 cat omni-info.txt
-
-# example (POSIX)
-# context = default
-# system  = linux
-# ocaml   = 5.3.0
-# exe     = /abs/path/to/_build/default/omni-irc-client/bin/main.exe
-# omni_posix = /abs/path/to/bin/omni
-# omni_win   = /abs/path/to/bin/omni.exe
 ```
-
-> `omni-info.txt` is ignored by git.
 
 ---
 
 ## Run
 
-Use the promoted wrapper in `bin/`:
+TLS example (Libera.Chat):
 
 ```sh
-# TLS (Libera.Chat example)
-bin/omni \
+dune exec omni-irc-client -- \
   --server irc.libera.chat \
   --port 6697 \
   --tls \
@@ -120,40 +144,76 @@ bin/omni \
   --realname "Your Name"
 ```
 
+Plain TCP:
+
+```sh
+dune exec omni-irc-client -- \
+  --server irc.example.org \
+  --port 6667 \
+  --nick yournick
+```
+
 Options:
 
-* `--server <host>` (required)
-* `--port <int>` (required)
-* `--tls` (use TLS backend; otherwise plain TCP)
-* `--nick <nick>` (optional, initial NICK)
-* `--realname <name>` (optional, initial USER realname)
-* `--ui <name>` (defaults to `notty`; currently only `notty` is implemented)
+* `--server <host>` **required**
+* `--port <int>` **required**
+* `--tls` (enable TLS backend)
+* `--nick <nick>` (initial nick; also seeds the `self_user` pointer)
+* `--realname <name>` (initial real name used in `USER`)
+* `--ui <name>` (defaults to `notty`; currently only `notty` exists)
 
-Windows:
-
-```powershell
-bin\omni.exe --server irc.libera.chat --port 6697 --tls --nick yournick --realname "Your Name"
-```
+> TLS notes: certificate verification is **on by default** in `omni-irc-io-tls` (via `ca-certs`). You can override SNI/ALPN in code, but the default client uses standard host-based SNI.
 
 ---
 
-## UI quick reference (Notty)
+## Notty UI: quick reference
 
 * **Enter**: send the typed line (CRLF appended)
 * **Backspace**: delete one character
 * **Up / Down**: scroll history
-* **q** / **Q** / **Esc** / **Ctrl-C**: quit
+* **q / Q / Esc / Ctrl-C**: quit
+
+**Slash commands**
+
+These are parsed by the UI and forwarded to the client as typed commands:
+
+* `/join <#ch>` — join channel (auto-adds `#` if missing)
+* `/names [#ch]` — ask the server for names in a channel
+* `/nick <newnick>` — change nick
+* `/msg <target> <message…>` — send a `PRIVMSG`
+* `/list [substr] [limit]` — request channel list (client gates and emits a table snapshot)
+* `/raw <literal IRC line…>` — send as-is (+CRLF if missing)
+* `/whois <nick>` or `/user <nick>` — WHOIS with caching
+* `/channel <#ch>` — emit a one-channel snapshot blob to the UI
+* **`/self`** or **`/whoami`** — re-emit a `client_user` upsert of the current self user
+
+**What you’ll see**
+
+* Raw IRC lines rendered to the scrollback.
+* Client state snapshots rendered as compact tables/messages, e.g.:
+
+  * `(chanlist: N entries total)` with a simple “Channel / Users / Topic” table
+  * `(channel updating: #ocaml)` when membership/topics/modes change
+  * `(Updating user nick: …)` when WHOIS/user data is upserted
+  * `(self: …)` when pointer/upsert for the self user arrives
 
 ---
 
-## Engine & parsing
+## How the pieces fit (mental model)
 
-* Minimal parser recognizes:
+Think of the client as the **parent** and the UI as the **child**:
 
-  * `PING [:token]` → handler sends `PONG [:token]`
-  * `INVITE <nick> :#channel` → handlers auto-join and show a notification
-  * Everything else is surfaced as raw/other events
-* Event dispatch is simple and non-blocking; add handlers by name in the engine.
+* The **UI “pulls levers”** (commands → `UiCmd`) like `/join`, `/whois`, `/self`.
+* The **client owns the state** (users, channels, list) and **pushes snapshots** to the UI as `CLIENT [JSON]` lines whenever it changes (or on demand).
+* The **UI never re-states** the model; it **renders** what the client exports and updates its local view.
+
+This keeps concerns clean:
+
+* IRC parsing, modeling, and correctness live in the client/engine.
+* The UI remains reactive and stateless beyond its local cache and presentation.
+
+For the exact JSON shapes, see the **UI/Client contract**:
+👉 [`doc/omni-irc-UI-Client-Contract.pdf`](doc/omni-irc-UI-Client-Contract.pdf)
 
 ---
 
@@ -162,13 +222,13 @@ bin\omni.exe --server irc.libera.chat --port 6697 --tls --nick yournick --realna
 Common commands:
 
 ```sh
-# Just the main executable under _build
-dune exec omni-irc-client
+# Run the client
+dune exec omni-irc-client -- --server ... --port ... [--tls] [--nick ...] [--realname ...]
 
-# Build + promote the repo-root wrapper
+# Build + (if configured) promote wrapper
 dune build @omni
 
-# Show build info with absolute paths
+# Absolute-path build info
 dune build @info && cat omni-info.txt
 
 # Clean build artifacts
@@ -177,16 +237,16 @@ dune clean
 
 ---
 
-## Roadmap
+## Roadmap (near-term ideas)
 
-* Expand parser (RPLs, CTCP, numerics, message tags)
-* More core handlers (e.g. JOIN/PART topic/mode notices)
-* Config file + profiles
-* Multiple UI backends (curses, web)
-* Reintroduce/expand AF\_UNIX use as a pluggable IPC channel
+* Emit `client_user` pointer automatically when a **server-observed nick change** occurs.
+* Add a `/self whois` convenience (time-gated WHOIS refresh + upsert).
+* Broaden parser/handlers (more numerics, message tags, CTCP).
+* Additional UI backends (curses, web).
+* Expand AF\_UNIX usage for IPC/testing harnesses.
 
 ---
 
 ## License
 
-See `LICENSE` (project currently uses a custom “LicenseRef-OmniIRC-ViewOnly-1.0”).
+See `LICENSE` (custom: **LicenseRef-OmniIRC-ViewOnly-1.0**).

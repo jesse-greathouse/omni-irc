@@ -50,6 +50,7 @@ type t = {
   mutable channels  : Channel.t SMap.t;
   mutable chanlist  : Channel_list.t;
   mutable users     : User.t SMap.t;
+  mutable self_user : User.t option;
 
   (* time-gating for LIST *)
   mutable last_list_refresh : float option;
@@ -354,6 +355,42 @@ let emit_client_blob t (j : Yojson.Safe.t) : unit Lwt.t =
   let line = "CLIENT " ^ (Y.to_string j) in
   notify t line
 
+(* --- Singular “self user” helpers --- *)
+
+let emit_client_user_pointer (t : t) ~(nick:string) : unit Lwt.t =
+  let key = user_key_of_nick nick in
+  let payload =
+    `Assoc [
+      ("type", `String "client_user");
+      ("op",   `String "pointer");
+      ("ts",   `Float (Unix.gettimeofday ()));
+      ("key",  `String key);
+      ("nick", `String nick);
+    ]
+  in
+  emit_client_blob t payload
+
+let set_self_by_nick (t : t) (nick : string) : unit Lwt.t =
+  let u = user_ensure t nick in
+  t.self_user <- Some u;
+  emit_client_user_pointer t ~nick
+
+let sync_self_user (t : t) : unit Lwt.t =
+  match t.self_user with
+  | None -> Lwt.return_unit
+  | Some u ->
+      let key = user_key_of_nick u.nick in
+      let payload =
+        `Assoc [
+          ("type", `String "client_user");
+          ("op",   `String "upsert");
+          ("ts",   `Float (Unix.gettimeofday ()));
+          ("key",  `String key);
+          ("user", json_of_user u);
+        ]
+      in
+      emit_client_blob t payload
+
 (* Channels → UI sync (snapshot / upsert / remove) *)
 let set_to_list (s : Channel.StringSet.t) : string list =
   Channel.StringSet.elements s
@@ -490,6 +527,7 @@ module Default_cmd = Cmd_core.Make(struct
   let channel_show (c:client_ctx) (ch:string) =
     emit_channel_info c ~name:ch
   let whois_request = whois_request
+  let sync_self_user = sync_self_user
 end)
 
 let default_cmd () : cmd_pack =
@@ -515,6 +553,7 @@ let create (c_mod : (module CONN)) (cfg : Conn.cfg)
     channels = SMap.empty;
     chanlist = Channel_list.empty;
     users = SMap.empty;
+    self_user = None;
     last_list_refresh = None;
     last_list_args = None;
     names_refreshing = CSet.empty;
@@ -533,7 +572,10 @@ let start_net t =
   C.connect t.cfg >>= fun conn ->
   t.c <- Some (B ((module C), conn));
   (match t.opts.nick with
-    | Some n when n <> "" -> send_raw t (Printf.sprintf "NICK %s\r\n" n)
+    | Some n when n <> "" ->
+        send_raw t (Printf.sprintf "NICK %s\r\n" n) >>= fun () ->
+        set_self_by_nick t n >>= fun () ->
+        sync_self_user t
     | _ -> Lwt.return_unit) >>= fun () ->
   (match t.opts.realname with
     | Some rn ->

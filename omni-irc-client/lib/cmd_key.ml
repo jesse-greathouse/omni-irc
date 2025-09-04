@@ -9,6 +9,7 @@ type t =
   | Get_list
   | Channel
   | WhoIs
+  | Self
   | Custom of string
 
 let of_string s =
@@ -22,6 +23,7 @@ let of_string s =
   | "CHANNEL"  -> Channel
   | "WHOIS"   -> WhoIs
   | "USER"    -> WhoIs
+  | "SELF"    -> Self
   | other   -> Custom other
 
 let to_string = function
@@ -33,4 +35,5 @@ let to_string = function
   | Get_list  -> "GET_LIST"
   | Channel   -> "CHANNEL"
   | WhoIs     -> "WHOIS"
+  | Self      -> "SELF"
   | Custom s  -> s
