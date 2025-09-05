@@ -11,4 +11,5 @@
   omni-irc-engine
   omni-irc-client.lib
   irc_ui
-  omni-irc-ui-notty))
+  omni-irc-ui-notty
+  irc_ui_headless))

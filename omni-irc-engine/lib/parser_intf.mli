@@ -28,6 +28,7 @@ module type S = sig
     | Kill     of { nick : string; reason : string option }
     | Join     of { channel : string; nick : string option; reason : string option }
     | Part     of { channel : string; nick : string option; reason : string option }
+    | Nick_change of { old_nick : string option; new_nick : string }
     | Other    of string * string list * string option
 
   val payload : event -> payload

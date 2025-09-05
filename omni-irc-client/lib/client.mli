@@ -28,7 +28,14 @@ module type CMD = sig
   val dispatch_async : t -> ctx -> key:Cmd_key.t -> args:string list -> unit
 end
 
-type opts = { nick : string option; realname : string option }
+type opts = {
+  nick           : string option;
+  realname       : string option;
+  alt_nicks      : string list;               (** fallback nicks if 433 *)
+  sasl_plain     : (string * string) option;  (** username, password *)
+  require_sasl   : bool;                      (** abort if SASL fails *)
+  reg_timeout_s  : float;                     (** handshake guard *)
+}
 
 type t
 
@@ -49,6 +56,9 @@ val create :
 
 val start  : t -> unit Lwt.t
 val stop   : t -> unit Lwt.t
+
+(** Register a callback to run when the network connection is established. *)
+val on_connect : t -> (t -> unit Lwt.t) -> unit
 
 (* Public API used by handlers & UI/internal logic *)
 val send_raw : t -> string -> unit Lwt.t
@@ -129,6 +139,11 @@ val member_part : t -> ch:string -> nick:string -> reason:string option -> unit 
 
 val channel_mode_change : t -> ch:string -> mode:string -> args:string list -> unit Lwt.t
 val user_mode_change    : t -> nick:string -> mode:string -> unit Lwt.t
+val user_nick_change    : t -> old_nick:string -> new_nick:string -> unit Lwt.t
+
+(** UI event: emit a high-level CLIENT nick_change notification. *)
+val emit_client_nick_change :
+  t -> old_nick:string -> new_nick:string -> channels:string list -> unit Lwt.t
 
 (** WHOIS mutation helpers (called by Core) *)
 val whois_basic     : t -> nick:string -> user:string -> host:string -> realname:string option -> unit Lwt.t

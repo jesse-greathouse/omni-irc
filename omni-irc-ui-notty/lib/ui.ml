@@ -738,62 +738,8 @@ let scroll_by t delta =
 let run t ~from_client ~to_client =
   let open Notty_lwt in
 
-
-  (* -------- Slash command parsing -------- *)
-  let trim (s:string) =
-    let n = String.length s in
-    let i = ref 0 and j = ref (n - 1) in
-    while !i < n && (match s.[!i] with ' ' | '\t' -> true | _ -> false) do incr i done;
-    while !j >= !i && (match s.[!j] with ' ' | '\t' -> true | _ -> false) do decr j done;
-    if !j < !i then "" else String.sub s !i (!j - !i + 1)
-  in
-
-  let split_words (s:string) =
-    s |> String.split_on_char ' ' |> List.filter (fun x -> x <> "")
-  in
-
-  (* /msg <target> <message with spaces>  -> ("PRIVMSG",[target; message])
-    /join <ch>                           -> ("JOIN",[ch])
-    /names [ch]                          -> ("NAMES",[ch?])
-    /nick <new>                          -> ("NICK",[new])
-    /list [substr]                       -> ("GET_LIST",[substr?])
-    /raw  <rest of line>                 -> ("RAW",[...])
-    /anything-else ...                   -> (UPPERCASE, args) (lets dispatcher decide) *)
-  let parse_slash (line:string) : [ `Cmd of string * string list | `Raw of string ] =
-    if String.length line > 0 && line.[0] = '/' then (
-      let cmdline = trim (String.sub line 1 (String.length line - 1)) in
-      if cmdline = "" then `Raw "" else
-      match split_words cmdline with
-      | [] -> `Raw ""
-      | root :: args ->
-          let r = String.lowercase_ascii root in
-          begin match r with
-          | "join" | "j" ->
-              `Cmd ("JOIN", args)
-          | "names" ->
-              `Cmd ("NAMES", args)
-          | "nick" ->
-              `Cmd ("NICK", args)
-          | "msg" | "privmsg" ->
-              (match args with
-              | tgt :: rest ->
-                  let msg = String.concat " " rest in
-                  `Cmd ("PRIVMSG", [tgt; msg])
-              | [] -> `Cmd ("PRIVMSG", []))
-          | "list" ->
-              `Cmd ("GET_LIST", args)
-          | "raw" ->
-              `Cmd ("RAW", args)
-          | "user" ->
-              `Cmd ("WHOIS", args)
-          | "whois" ->
-              `Cmd ("WHOIS", args)
-          | "self" | "whoami" -> `Cmd ("SELF", args)
-          | other ->
-              `Cmd (String.uppercase_ascii other, args)
-          end
-    ) else `Raw line
-  in
+  (* Auto-start the network connection *)
+  let (_: unit Lwt.t) = to_client (UIX.UiCmd ("CONNECT", [])) in
 
   let request_quit () : unit Lwt.t =
     to_client UIX.UiQuit
@@ -806,11 +752,9 @@ let run t ~from_client ~to_client =
         Buffer.clear t.input_buf;
         if line <> "" then push_output_line t ("> " ^ line);
         redraw t >>= fun () ->
-          (match parse_slash line with
-            | `Cmd (key, args) ->
-              to_client (UIX.UiCmd (key, args))
-            | `Raw s ->
-              to_client (UIX.UiSendRaw (Bytes.of_string (s ^ "\r\n"))))
+          (match Irc_ui.Command.parse line with
+              | `Cmd (key, args) -> to_client (UIX.UiCmd (key, args))
+              | `Raw s           -> to_client (UIX.UiSendRaw (Bytes.of_string (s ^ "\r\n"))))
         >>= ui_loop
     | `Key (`Backspace, _) ->
         let n = Buffer.length t.input_buf in
@@ -842,26 +786,62 @@ let run t ~from_client ~to_client =
 
   let rec from_client_loop () =
     from_client () >>= function
+  | UIX.UiConnected ->
+      (* optional: show a small toast; or just ignore and keep looping *)
+      push_output_line t "(uix connected)";
+      redraw t >>= from_client_loop
   | UIX.ClientClosed ->
       push_output_line t "(connection closed)";
       redraw t
   | UIX.ClientInfo s ->
-      let handle_prefixed prefix =
-        if String.length s >= String.length prefix
-          && String.sub s 0 (String.length prefix) = prefix
-        then Some (String.sub s (String.length prefix) (String.length s - String.length prefix))
-        else None
-      in
-      begin match handle_prefixed "CLIENT " with
-      | Some payload -> handle_client_blob t payload; redraw t >>= from_client_loop
+    (* Fast prefix check without allocating a substring *)
+    let has_prefix s pre =
+      let ls = String.length s and lp = String.length pre in
+      if ls < lp then false
+      else
+        let rec go i =
+          if i = lp then true
+          else if String.unsafe_get s i <> String.unsafe_get pre i then false
+          else go (i + 1)
+        in
+        go 0
+    in
+
+    (* Try to handle [s] if it starts with [prefix], using [handler].
+      Handlers are synchronous (unit); we wrap them to yield unit Lwt.t. *)
+    let try_prefix (prefix : string) (name : string)
+                  (handler : _ -> string -> unit)
+      : unit Lwt.t option =
+      if has_prefix s prefix then
+        let payload =
+          let lp = String.length prefix in
+          String.sub s lp (String.length s - lp)
+        in
+        Some (
+          Lwt.catch
+            (fun () ->
+              handler t payload;             (* unit *)
+              Lwt.return_unit)               (* wrap to unit Lwt.t *)
+            (fun exn ->
+              (* keep UI alive; surface parse errors *)
+              push_output_line t
+                (Printf.sprintf "%s payload error: %s"
+                    name (Printexc.to_string exn));
+              Lwt.return_unit)
+        )
+      else None
+    in
+
+    (* Only handle "CLIENT "; everything else is printed verbatim *)
+    let work =
+      match try_prefix "CLIENT " "CLIENT" handle_client_blob with
+      | Some w -> w
       | None ->
-        begin match handle_prefixed "CONSOLE " with
-        | Some payload -> handle_client_blob t payload; redraw t >>= from_client_loop
-        | None ->
-            (* plain line *)
-            push_output_line t s; redraw t >>= from_client_loop
-        end
-      end
+          push_output_line t s;
+          Lwt.return_unit
+    in
+    work >>= fun () ->
+    redraw t >>= from_client_loop
   | UIX.ClientRxChunk b ->
       feed_chunk t (Bytes.unsafe_to_string b);
       redraw t >>= from_client_loop

@@ -38,6 +38,7 @@ module type CLIENT = sig
 
   val channel_mode_change : t -> ch:string -> mode:string -> args:string list -> unit Lwt.t
   val user_mode_change    : t -> nick:string -> mode:string -> unit Lwt.t
+  val user_nick_change    : t -> old_nick:string -> new_nick:string -> unit Lwt.t
 end
 
 module Make (P : Parser_intf.S) (C : CLIENT) = struct
@@ -137,12 +138,19 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
           | _              -> None
         in
         (match (ch_opt, topic_opt) with
-         | (Some ch, Some topic) -> C.channel_set_topic c ~ch ~topic
-         | _ -> Lwt.return_unit)
+          | (Some ch, Some topic) -> C.channel_set_topic c ~ch ~topic
+          | _ -> Lwt.return_unit)
     | _ -> Lwt.return_unit
 
   (* 376 RPL_ENDOFMOTD: no auto /LIST on connect *)
   let h_end_of_motd _ev _c = Lwt.return_unit
+
+  (* NICK: update user index + announce if needed *)
+  let h_nick (ev : P.event) (c : C.t) =
+    match P.payload ev with
+    | P.Nick_change { old_nick = Some oldn; new_nick } ->
+        C.user_nick_change c ~old_nick:oldn ~new_nick
+    | _ -> Lwt.return_unit
 
   let h_privmsg ev c =
     let is_channel_target (s : string) =
@@ -292,6 +300,7 @@ module Make (P : Parser_intf.S) (C : CLIENT) = struct
     E.on eng "JOIN"          h_join;
     E.on eng "PART"          h_part;
     E.on eng "MODE"          h_mode;
+    E.on eng "NICK"          h_nick;
     (* WHOIS numerics *)
     E.on eng "311"           h_whois_311;
     E.on eng "312"           h_whois_312;

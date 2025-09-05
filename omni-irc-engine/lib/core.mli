@@ -35,6 +35,7 @@ module type CLIENT = sig
   (** Mode tracking *)
   val channel_mode_change : t -> ch:string -> mode:string -> args:string list -> unit Lwt.t
   val user_mode_change    : t -> nick:string -> mode:string -> unit Lwt.t
+  val user_nick_change    : t -> old_nick:string -> new_nick:string -> unit Lwt.t
 end
 
 module Make (P : Parser_intf.S) (C : CLIENT) : sig

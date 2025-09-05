@@ -27,7 +27,14 @@ module type CMD = sig
   val dispatch_async : t -> ctx -> key:Cmd_key.t -> args:string list -> unit
 end
 
-type opts = { nick : string option; realname : string option }
+type opts = {
+  nick           : string option;
+  realname       : string option;
+  alt_nicks      : string list;
+  sasl_plain     : (string * string) option;  (* username, password *)
+  require_sasl   : bool;
+  reg_timeout_s  : float;
+}
 
 type boxed =
   | B : (module CONN with type conn = 'c) * 'c -> boxed
@@ -47,6 +54,7 @@ type t = {
   opts              : opts;
   mutable running   : bool;
   cmd_pack          : cmd_pack;
+  on_connect        : (t -> unit Lwt.t) list ref;
   mutable channels  : Channel.t SMap.t;
   mutable chanlist  : Channel_list.t;
   mutable users     : User.t SMap.t;
@@ -57,6 +65,14 @@ type t = {
   mutable last_list_args    : (string option * int option) option;
   mutable names_refreshing  : CSet.t;
   mutable whois_last_ts     : float SMap.t;
+
+  (* --- handshake state --- *)
+  mutable registered        : bool;
+  mutable cap_active        : bool;
+  mutable sasl_in_progress  : bool;
+  mutable nick_cycle        : string list;   (* head = current candidate *)
+  mutable reg_timer         : unit Lwt.t option;
+  mutable was_connected     : bool;
 }
 and cmd_pack = Pack : (module CMD with type ctx = t and type t = 'a) * 'a -> cmd_pack
 
@@ -67,6 +83,9 @@ type client_ctx = t
 
 (* re-export so Client.Cmd_key works *)
 module Cmd_key = Cmd_key
+
+let on_connect (t : t) (f : t -> unit Lwt.t) =
+  t.on_connect := f :: !(t.on_connect)
 
 let with_conn (t : t) (f : boxed -> 'r Lwt.t) : 'r Lwt.t =
   match t.c with None -> Lwt.fail_with "client: not connected" | Some b -> f b
@@ -91,7 +110,10 @@ let channel_ensure t name =
       t.channels <- SMap.add k ch t.channels;
       ch
 
-let notify t s = Lwt_mvar.put t.from_client_m (UIX.ClientInfo s)
+let push_from_client (t : t) (ev : UIX.from_client) : unit Lwt.t =
+  Lwt_mvar.put t.from_client_m ev
+
+let notify t s = push_from_client t (UIX.ClientInfo s)
 let quit   t   = send_raw t "QUIT :bye\r\n"
 
 (* Pretty print a channel list snapshot into the UI (one line per channel). *)
@@ -274,7 +296,6 @@ let json_of_user (u : User.t) : Yojson.Safe.t =
     ("channel_modes", channel_modes_json);
   ]
 
-
 let emit_console_user_upsert (t : t) ~(u : User.t) : unit Lwt.t =
   let payload =
     `Assoc [
@@ -284,8 +305,13 @@ let emit_console_user_upsert (t : t) ~(u : User.t) : unit Lwt.t =
       ("user", json_of_user u)
     ]
   in
-  (* Intentionally using CONSOLE prefix per requirement *)
-  notify t ("CONSOLE " ^ Yojson.Safe.to_string payload)
+  (* Intentionally using CLIENT prefix per requirement *)
+  notify t ("CLIENT " ^ Yojson.Safe.to_string payload)
+
+let upsert_realname (t : t) ~(nick:string) ~(realname:string) : unit Lwt.t =
+  let u = user_ensure t nick in
+  if u.real_name <> Some realname then u.real_name <- Some realname;
+  emit_console_user_upsert t ~u
 
 (* time-gated WHOIS request *)
 let whois_refresh_period = 180.0   (* 3 minutes *)
@@ -352,11 +378,33 @@ let json_of_chanlist ?filter ?limit (t : t) : Yojson.Safe.t =
   ]
 
 let emit_client_blob t (j : Yojson.Safe.t) : unit Lwt.t =
-  let line = "CLIENT " ^ (Y.to_string j) in
+  let line = "CLIENT " ^ (Yojson.Safe.to_string j) in
   notify t line
 
-(* --- Singular “self user” helpers --- *)
+(* Emit a dedicated nick change event the UI can consume for toasts/annotations. *)
+let emit_client_nick_change
+    (t : t)
+    ~(old_nick:string)
+    ~(new_nick:string)
+    ~(channels:string list)
+  : unit Lwt.t =
+  let key_old = user_key_of_nick old_nick in
+  let key_new = user_key_of_nick new_nick in
+  let payload =
+    `Assoc [
+      ("type",      `String "nick_change");
+      ("ts",        `Float (Unix.gettimeofday ()));
+      ("old_nick",  `String (sanitize_for_json old_nick));
+      ("new_nick",  `String (sanitize_for_json new_nick));
+      ("old_key",   `String key_old);
+      ("new_key",   `String key_new);
+      ("channels",  `List (List.map (fun c -> `String (sanitize_for_json c)) channels));
+    ]
+  in
+  emit_client_blob t payload
 
+
+(* --- Singular “self user” helpers --- *)
 let emit_client_user_pointer (t : t) ~(nick:string) : unit Lwt.t =
   let key = user_key_of_nick nick in
   let payload =
@@ -558,7 +606,201 @@ let create (c_mod : (module CONN)) (cfg : Conn.cfg)
     last_list_args = None;
     names_refreshing = CSet.empty;
     whois_last_ts = SMap.empty;
+    on_connect = ref [];
+    registered = false;
+    cap_active = false;
+    sasl_in_progress = false;
+    nick_cycle =
+      (match opts.nick with Some n when String.trim n <> "" -> [n] | _ -> ["guest"])
+      @ (List.filter (fun s -> String.trim s <> "") opts.alt_nicks);
+    reg_timer = None;
+    was_connected = false;
   }
+  |> fun t ->
+    (* ---------------- Handshake helpers ---------------- *)
+    let choose = function Some s when String.trim s <> "" -> Some (String.trim s) | _ -> None in
+    let current_nick () =
+      match t.nick_cycle with
+      | n :: _ -> n
+      | []     -> "guest"
+    in
+    let rotate_nick () =
+      match t.nick_cycle with
+      | [] -> ()
+      | [_] ->
+          (* last resort: suffix '_' *)
+          let n = current_nick () in
+          t.nick_cycle <- [n ^ "_"]
+      | _ :: rest -> t.nick_cycle <- rest
+    in
+    let username_for_user () =
+      match choose t.cfg.username with
+      | Some u -> u
+      | None   -> current_nick ()
+    in
+    let realname_for_user () =
+      match choose t.opts.realname with
+      | Some rn -> rn
+      | None ->
+        (match choose t.cfg.realname with Some rn -> rn | None -> current_nick ())
+    in
+    (* Tiny base64 encoder for SASL PLAIN *)
+    let b64_encode (s:string) : string =
+      let tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" in
+      let len = String.length s in
+      let buf = Buffer.create ((len + 2) / 3 * 4) in
+      let byte i = Char.code s.[i] in
+      let rec loop i =
+        if i >= len then ()
+        else
+          let b0 = byte i in
+          let b1 = if i+1 < len then byte (i+1) else 0 in
+          let b2 = if i+2 < len then byte (i+2) else 0 in
+          let n = (b0 lsl 16) lor (b1 lsl 8) lor b2 in
+          Buffer.add_char buf tbl.[(n lsr 18) land 63];
+          Buffer.add_char buf tbl.[(n lsr 12) land 63];
+          if i+1 < len then Buffer.add_char buf tbl.[(n lsr 6) land 63] else Buffer.add_char buf '=';
+          if i+2 < len then Buffer.add_char buf tbl.[n land 63]         else Buffer.add_char buf '=';
+          loop (i+3)
+      in loop 0; Buffer.contents buf
+    in
+    let send_pass_if_any () =
+      match choose t.cfg.password with
+      | Some pass -> send_raw t (Printf.sprintf "PASS %s\r\n" pass)
+      | None      -> Lwt.return_unit
+    in
+    let send_nick_user () =
+      let n  = current_nick () in
+      let un = username_for_user () in
+      let rn = realname_for_user () in
+      set_self_by_nick t n >>= fun () ->
+      upsert_realname t ~nick:n ~realname:rn >>= fun () ->
+      sync_self_user t >>= fun () ->
+      send_raw t (Printf.sprintf "NICK %s\r\n" n) >>= fun () ->
+      send_raw t (Printf.sprintf "USER %s 0 * :%s\r\n" un rn)
+    in
+    let cap_begin_if_needed () =
+      match t.opts.sasl_plain with
+      | None -> Lwt.return_unit
+      | Some _ ->
+          t.cap_active <- true;
+          send_raw t "CAP LS 302\r\n"
+    in
+    let cap_end () =
+      if t.cap_active then (t.cap_active <- false; send_raw t "CAP END\r\n")
+      else Lwt.return_unit
+    in
+    let start_sasl () =
+      match t.opts.sasl_plain with
+      | None -> Lwt.return_unit
+      | Some _ ->
+          t.sasl_in_progress <- true;
+          send_raw t "CAP REQ :sasl\r\n"
+    in
+    let abort_if_required_sasl () =
+      if t.opts.require_sasl then
+        notify t "SASL required but failed; disconnecting." >>= fun () ->
+        quit t
+      else
+        notify t "SASL failed; continuing without it." >>= fun () ->
+        cap_end ()
+    in
+    let arm_registration_timer () =
+      (match t.reg_timer with
+      | Some _ -> ()
+      | None ->
+          let p =
+            Lwt_unix.sleep t.opts.reg_timeout_s >>= fun () ->
+            if not t.registered then
+              let msg =
+                if t.sasl_in_progress
+                then "Still negotiating SASL…"
+                else Printf.sprintf "Registration taking longer than %.0fs…" t.opts.reg_timeout_s
+              in
+              notify t msg >>= fun () ->
+              (if t.cap_active then cap_end () else send_raw t (Printf.sprintf "NICK %s\r\n" (current_nick ())))
+            else Lwt.return_unit
+          in
+          t.reg_timer <- Some p);
+      Lwt.return_unit
+    in
+
+    (* Engine event bindings *)
+    Engine.on t.engine "CONNECT"
+      (fun _ _ ->
+        t.registered <- false;
+        send_pass_if_any () >>= fun () ->
+        cap_begin_if_needed () >>= fun () ->
+        send_nick_user ()     >>= fun () ->
+        arm_registration_timer ()
+      );
+
+    (* CAP replies *)
+    Engine.on t.engine "CAP"
+      (fun ev _ ->
+        match P.payload ev with
+        | P.Other ("CAP", params, trailing) ->
+            let p2 = (match params with _srv :: x :: _ -> String.uppercase_ascii x | x::[] -> String.uppercase_ascii x | _ -> "") in
+            (match p2 with
+              | "LS" ->
+                  let caps = match trailing with Some s -> " " ^ String.lowercase_ascii s ^ " " | None -> " " in
+                  (match t.opts.sasl_plain with
+                  | Some _ when String.contains caps 's' && String.contains caps 'a' ->
+                      (* naive contains; ok for " sasl " *)
+                      if String.exists (fun _ -> false) caps then Lwt.return_unit else start_sasl ()
+                  | Some _ ->
+                      (* no sasl support *)
+                      abort_if_required_sasl ()
+                  | None -> cap_end ())
+              | "ACK" ->
+                (* Server acknowledged sasl *)
+                (match t.opts.sasl_plain with
+                  | Some _ ->
+                      send_raw t "AUTHENTICATE PLAIN\r\n"
+                  | None -> Lwt.return_unit)
+              | "NAK" ->
+                  abort_if_required_sasl ()
+              | _ -> Lwt.return_unit)
+        | _ -> Lwt.return_unit);
+
+    (* AUTHENTICATE flow *)
+    Engine.on t.engine "AUTHENTICATE"
+      (fun ev _ ->
+        match P.payload ev with
+        | P.Other ("AUTHENTICATE", _ps, Some "+") ->
+            (match t.opts.sasl_plain with
+              | Some (user, pass) ->
+                  let payload = "\x00" ^ user ^ "\x00" ^ pass in
+                  let b = b64_encode payload in
+                  send_raw t (Printf.sprintf "AUTHENTICATE %s\r\n" b)
+              | None -> Lwt.return_unit)
+        | _ -> Lwt.return_unit);
+
+    (* SASL success / failure numerics *)
+    Engine.on t.engine "903" (fun _ _ -> t.sasl_in_progress <- false; cap_end ());
+    Engine.on t.engine "900" (fun _ _ -> t.sasl_in_progress <- false; Lwt.return_unit);
+    Engine.on t.engine "904" (fun _ _ -> t.sasl_in_progress <- false; abort_if_required_sasl ());
+    Engine.on t.engine "905" (fun _ _ -> t.sasl_in_progress <- false; abort_if_required_sasl ());
+    Engine.on t.engine "906" (fun _ _ -> t.sasl_in_progress <- false; abort_if_required_sasl ());
+    Engine.on t.engine "907" (fun _ _ -> t.sasl_in_progress <- false; abort_if_required_sasl ());
+
+    (* 001 welcome -> we are registered *)
+    Engine.on t.engine "001"
+      (fun _ _ ->
+        t.registered <- true;
+        t.was_connected <- true;
+        notify t "Registered (001)" );
+
+    (* 433 nick in use -> rotate and try again *)
+    Engine.on t.engine "433"
+      (fun _ _ ->
+        let old = current_nick () in
+        rotate_nick ();
+        let nn = current_nick () in
+        notify t (Printf.sprintf "Nick %S is in use; trying %S…" old nn) >>= fun () ->
+        send_raw t (Printf.sprintf "NICK %s\r\n" nn)
+      );
+    t
 
 let start_ui t =
   let module UIM = (val t.ui_mod : UIX.S) in
@@ -569,48 +811,101 @@ let start_ui t =
 
 let start_net t =
   let module C = (val t.c_mod : CONN) in
-  C.connect t.cfg >>= fun conn ->
-  t.c <- Some (B ((module C), conn));
-  (match t.opts.nick with
-    | Some n when n <> "" ->
-        send_raw t (Printf.sprintf "NICK %s\r\n" n) >>= fun () ->
-        set_self_by_nick t n >>= fun () ->
-        sync_self_user t
-    | _ -> Lwt.return_unit) >>= fun () ->
-  (match t.opts.realname with
-    | Some rn ->
-        let user = match t.opts.nick with Some n when n <> "" -> n | _ -> "guest" in
-        send_raw t (Printf.sprintf "USER %s 0 * :%s\r\n" user rn)
-    | None -> Lwt.return_unit) >>= fun () ->
 
-  (* tell the UI what we know right now (may be empty) *)
-  emit_channels_snapshot t >>= fun () ->
+  (* Tell the UI the client side is up, then explicitly WAIT for an
+     inbound “CONNECT” command from the UI before dialing the IRC server. *)
+  Lwt_mvar.put t.from_client_m UIX.UiConnected >>= fun () ->
+  notify t "(Issue /connect ...)" >>= fun () ->
 
-  let rec rx_loop () =
-    let buf = Bytes.create 4096 in
-    C.recv conn buf >>= function
-    | 0 -> Lwt_mvar.put t.from_client_m UIX.ClientClosed
-    | n ->
-        let chunk = Bytes.sub_string buf 0 n in
-        Lwt_mvar.put t.from_client_m (UIX.ClientRxChunk (Bytes.of_string chunk)) >>= fun () ->
-        Engine.ingest_chunk t.engine t.acc chunk t >>= rx_loop
-  in
-  let rec tx_loop () =
+  (* Pre-connect loop: only “CONNECT” lets us proceed. Everything else is
+     gently rejected until we’re connected. *)
+  let rec wait_for_connect () =
     Lwt_mvar.take t.to_client_m >>= function
-    | UIX.UiSendRaw b ->
-        C.send conn ~off:0 ~len:(Bytes.length b) b >>= fun _ -> tx_loop ()
-    | UIX.UiCmd (key_str, args) ->
-        let key = Cmd_key.of_string key_str in
-        cmd_async t ~key ~args; tx_loop ()
-    | UIX.UiQuit ->
+    | UIX.UiCmd (key_str, _args)
+      when String.uppercase_ascii key_str = "CONNECT" ->
         Lwt.return_unit
+    | UIX.UiQuit ->
+        (* Abort net start cleanly *)
+        Lwt.fail Exit
+    | UIX.UiSendRaw _ ->
+        notify t "Not connected yet. Type /connect to begin." >>= wait_for_connect
+    | UIX.UiCmd (_k, _args) ->
+        notify t "Not connected yet. Type /connect to begin." >>= wait_for_connect
   in
-  Lwt.finalize (fun () -> Lwt.pick [ rx_loop (); tx_loop () ])
-                (fun () -> Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
+
+  Lwt.catch
+    (fun () ->
+      wait_for_connect () >>= fun () ->
+
+      (* Now dial the IRC server. *)
+      C.connect t.cfg >>= fun conn ->
+      t.c <- Some (B ((module C), conn));
+
+      (* Tell the engine we are connected; CONNECT handlers will identify. *)
+      Engine.ingest_line t.engine "CONNECT" t >>= fun () ->
+
+      (* Tell the UI what we know right now (may be empty). *)
+      emit_channels_snapshot t >>= fun () ->
+
+      let rec rx_loop () =
+        let buf = Bytes.create 4096 in
+        C.recv conn buf >>= function
+        | 0 -> Lwt_mvar.put t.from_client_m UIX.ClientClosed
+        | n ->
+            let chunk = Bytes.sub_string buf 0 n in
+            Lwt_mvar.put t.from_client_m (UIX.ClientRxChunk (Bytes.of_string chunk)) >>= fun () ->
+            Engine.ingest_chunk t.engine t.acc chunk t >>= rx_loop
+      in
+      let rec tx_loop () =
+        Lwt_mvar.take t.to_client_m >>= function
+        | UIX.UiSendRaw b ->
+            C.send conn ~off:0 ~len:(Bytes.length b) b >>= fun _ -> tx_loop ()
+        | UIX.UiCmd (key_str, args) ->
+            let key = Cmd_key.of_string key_str in
+            cmd_async t ~key ~args; tx_loop ()
+        | UIX.UiQuit ->
+            Lwt.return_unit
+      in
+      Lwt.finalize (fun () -> Lwt.pick [ rx_loop (); tx_loop () ])
+                    (fun () -> Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
+    )
+    (function
+      | Exit -> Lwt.return_unit  (* user quit before connecting *)
+      | _exn -> Lwt.return_unit)
+
 
 let start t =
   if t.running then Lwt.return_unit
-  else (t.running <- true; Lwt.pick [ start_ui t; start_net t ])
+  else begin
+    t.running <- true;
+
+    let ui_task  = start_ui t in
+    let net_task = start_net t in
+
+    let on_ui_exit =
+      ui_task >>= fun () ->
+      (* UI adapter terminated: make sure the net side stops too. *)
+      let signal_tx_loop_quit () =
+        (* Best-effort, don’t block if something is already queued. *)
+        if Lwt_mvar.is_empty t.to_client_m
+        then Lwt_mvar.put t.to_client_m UIX.UiQuit
+        else Lwt.return_unit
+      in
+      signal_tx_loop_quit () >>= fun () ->
+      (if t.was_connected
+        then Lwt.catch (fun () -> quit t) (fun _ -> Lwt.return_unit)
+        else Lwt.return_unit) >>= fun () ->
+      (* Close underlying connection if any; this unblocks rx_loop. *)
+      (match t.c with
+        | None -> Lwt.return_unit
+        | Some (B ((module C), conn)) ->
+            Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
+    in
+
+    (* Wait for UI to end and for net to wind down, then exit(0). *)
+    Lwt.join [ on_ui_exit; net_task ] >|= fun () ->
+    Stdlib.exit 0
+  end
 
 let stop t =
   t.running <- false;
@@ -990,3 +1285,65 @@ let user_mode_change (t : t) ~nick ~mode : unit Lwt.t =
     u.modes <- next;
     emit_console_user_upsert t ~u
   ) else Lwt.return_unit
+
+
+(* NICK change propagation *)
+let user_nick_change (t : t) ~old_nick ~new_nick : unit Lwt.t =
+  let oldk = user_key_of_nick old_nick in
+  let newk = user_key_of_nick new_nick in
+  if oldk = newk then Lwt.return_unit else
+  let (u_opt, users') =
+    match SMap.find_opt oldk t.users with
+    | None -> (None, t.users)  (* unseen? nothing to migrate *)
+    | Some u ->
+        u.nick <- new_nick;
+        (Some u, SMap.add newk u (SMap.remove oldk t.users))
+  in
+  t.users <- users';
+  (* Rewrite membership sets in all channels *)
+  let changed_names = ref [] in
+  let rewrite_set s =
+    if Channel.StringSet.mem oldk s then
+      Some (Channel.StringSet.add newk (Channel.StringSet.remove oldk s))
+    else None
+  in
+  t.channels <-
+    SMap.mapi
+      (fun kch (ch : Channel.t) ->
+        let users'  = rewrite_set ch.users  in
+        let ops'    = rewrite_set ch.ops    in
+        let voices' = rewrite_set ch.voices in
+        match (users', ops', voices') with
+        | (None, None, None) -> ch
+        | _ ->
+            let ch' =
+              { ch with
+                users  = (match users'  with Some s -> s | None -> ch.users);
+                ops    = (match ops'    with Some s -> s | None -> ch.ops);
+                voices = (match voices' with Some s -> s | None -> ch.voices) }
+            in
+            changed_names := (Model_channel.wire_of_name kch) :: !changed_names;
+            ch')
+      t.channels;
+  (* If this is the connected user, retarget the pointer and emit *)
+  (match t.self_user with
+    | Some su when user_key_of_nick su.nick = oldk ->
+        su.nick <- new_nick;
+        (* pointer then full upsert to keep UI fast/correct *)
+        emit_client_user_pointer t ~nick:new_nick >>= fun () ->
+        sync_self_user t
+    | _ -> Lwt.return_unit) >>= fun () ->
+
+  (* Emit a high-level UI event for toasts/inline markers *)
+  let channels_changed = List.rev !changed_names in
+  emit_client_nick_change
+    t ~old_nick ~new_nick ~channels:channels_changed >>= fun () ->
+
+  (* Update any channels that changed *)
+  (match !changed_names with
+    | [] -> Lwt.return_unit
+    | names -> emit_channels_upsert t ~names) >>= fun () ->
+  (* And emit a user upsert if we had the user *)
+  (match u_opt with
+    | None -> Lwt.return_unit
+    | Some u -> emit_console_user_upsert t ~u)

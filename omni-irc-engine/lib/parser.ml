@@ -12,6 +12,7 @@ type payload =
   | Kill     of { nick : string; reason : string option }
   | Join     of { channel : string; nick : string option; reason : string option }
   | Part     of { channel : string; nick : string option; reason : string option }
+  | Nick_change of { old_nick : string option; new_nick : string }
   | Other    of string * string list * string option
 
 type event = { name : string; payload : payload }
@@ -107,11 +108,15 @@ let of_line line =
       { name = "RPL_LIST"; payload = List_item { channel = ch; num_users; topic } }
   | "323", _me :: _, msg ->
       { name = "RPL_LISTEND"; payload = List_end { message = msg } }
+  | "NICK", (newnick :: _), _ ->
+      { name = "NICK"; payload = Nick_change { old_nick = nick_of_prefix prefix; new_nick = newnick } }
+  | "NICK", [], (Some newnick) ->
+      { name = "NICK"; payload = Nick_change { old_nick = nick_of_prefix prefix; new_nick = newnick } }
   | "PRIVMSG", target :: _, Some text ->
       { name = "PRIVMSG"; payload = Privmsg { from = prefix; target; text } }
   | "PART", (ch :: _), reason ->
       { name = "PART";
-        payload = Part { channel = ch; nick = nick_of_prefix prefix; reason } }
+        payload = Part { channel = ch; nick = nick_of_prefix prefix; reason } }  
   | "PART", [], (Some ch) ->
       { name = "PART";
         payload = Part { channel = ch; nick = nick_of_prefix prefix; reason = None } }

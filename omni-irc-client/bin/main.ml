@@ -44,6 +44,7 @@ let select_ui (name_opt : string option) : (module UIX.S) =
   | Some name ->
       begin match String.lowercase_ascii name with
       | "notty" -> (module Irc_ui_notty.Ui : UIX.S)
+      | "headless" -> (module Irc_ui_headless.Ui : UIX.S)
       | _ -> prerr_endline ("Unknown UI '" ^ name ^ "'. Try: notty"); exit 2
       end
 
@@ -54,6 +55,9 @@ let () =
   let realname  = ref "" in
   let ui_name   = ref "" in
   let use_tls   = ref false in
+  let use_headless = ref false in
+  let socket_override = ref None in
+  let set_socket p = socket_override := Some p in
 
   let specl =
     [
@@ -61,8 +65,10 @@ let () =
       ("--port",     Arg.Set_int    port,     "IRC server port (required)");
       ("--nick",     Arg.Set_string nick,     "IRC nickname (optional init)");
       ("--realname", Arg.Set_string realname, "IRC realname (optional init)");
-      ("--ui",       Arg.Set_string ui_name,  "UI adapter (default: notty)");
+      ("--ui",       Arg.Set_string ui_name,  "UI adapter: notty | headless (default: notty)");
       ("--tls",      Arg.Set use_tls,         "Enable TLS (ocaml-tls backend)");
+      ("--headless", Arg.Set use_headless,    "Use the headless UI (Unix socket bridge)");
+      ("--socket",   Arg.String set_socket,   "PATH  Unix socket path for headless UI (overrides default)");
     ]
   in
   let usage = "omni-irc-client --server HOST --port PORT [--ui notty] [--tls]" in
@@ -88,7 +94,38 @@ let () =
       keepalive = true;
     } in
 
-    let ui_opt = if !ui_name = "" then None else Some !ui_name in
+    (* Decide which UI to load and, if headless, establish the socket path *)
+    let sanitize s =
+      let b = Bytes.of_string s in
+      for i = 0 to Bytes.length b - 1 do
+        match Bytes.get b i with
+        | '/' | '\\' | ' ' | ':' -> Bytes.set b i '_'
+        | _ -> ()
+      done;
+      Bytes.unsafe_to_string b
+    in
+    let default_sock () =
+      let server_s = sanitize !server in
+      let nick_s   = sanitize (if !nick = "" then "guest" else !nick) in
+      Printf.sprintf "/tmp/omni/%s-%s.sock" server_s nick_s
+    in
+    let want_headless =
+      !use_headless || (String.lowercase_ascii !ui_name = "headless")
+    in
+    (if want_headless && Sys.win32 then (
+        prerr_endline "--headless requires a Unix platform (Unix domain sockets).";
+        exit 2
+    ));
+    let ui_opt =
+      if want_headless then Some "headless"
+      else if !ui_name = "" then None else Some !ui_name
+    in
+    (* If headless, decide socket path now and publish it for the UI *)
+    (match ui_opt with
+      | Some "headless" ->
+        let path = match !socket_override with Some p -> p | None -> default_sock () in
+        Unix.putenv "OMNI_IRC_SOCKET" path
+      | _ -> ());
     let ui_mod = select_ui ui_opt in
 
     let (eng : Client.t Engine.t) = Engine.create () in
@@ -119,6 +156,7 @@ let () =
         let whois_complete = Client.whois_complete
         let channel_mode_change = Client.channel_mode_change
         let user_mode_change    = Client.user_mode_change
+        let user_nick_change    = Client.user_nick_change
       end)
     in
     Core_for_client.register_defaults eng;
@@ -129,8 +167,14 @@ let () =
         cfg
         ~engine:eng
         ~ui:ui_mod
-        ~opts:{ Client.nick     = (if !nick = "" then None else Some !nick);
-                Client.realname = (if !realname = "" then None else Some !realname) }
+        ~opts:{
+          Client.nick          = (if !nick = "" then None else Some !nick);
+          Client.realname      = (if !realname = "" then None else Some !realname);
+          Client.alt_nicks     = [];          (* or your parsed --alt-nick list *)
+          Client.sasl_plain    = None;        (* or Some (user, pass) *)
+          Client.require_sasl  = false;       (* set true if you want hard-fail *)
+          Client.reg_timeout_s = 12.0;        (* whatever default you chose *)
+        }
         ()
     in
     Lwt_io.eprintf "[client] using %s\n%!"

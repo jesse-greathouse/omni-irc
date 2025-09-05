@@ -2,5 +2,5 @@
  (name irc_ui)
  (public_name omni-irc-ui)
  (libraries lwt)
- (modules ui_intf)
+ (modules ui_intf  command)
  (modules_without_implementation ui_intf))
