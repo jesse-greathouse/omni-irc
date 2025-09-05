@@ -3,7 +3,7 @@
 Omni-IRC is a modular, experimental IRC client written in [OCaml](https://ocaml.org/). It’s split into small, composable libraries (IO backends, connector, engine, UI) plus a thin client executable. You can reuse the pieces independently or wire them together as a full terminal client.
 
 📄 **Design & UI/Client contract:** see **[`doc/omni-irc-UI-Client-Contract.pdf`](doc/omni-irc-UI-Client-Contract.pdf)**  
-🖼️ **Diagram illustration:** [![Omni-IRC Control Flow](https://lucid.app/publicSegments/view/5788cf4b-75a6-4946-88b2-b305e7aa1c4c/image.png)](https://i.imgur.com/kPQCqxU.png)
+🖼️ **Diagram illustration:** [![Omni-IRC Control Flow](https://i.imgur.com/kPQCqxU.png)](https://lucid.app/publicSegments/view/5788cf4b-75a6-4946-88b2-b305e7aa1c4c/image.png)
 
 ---
 
