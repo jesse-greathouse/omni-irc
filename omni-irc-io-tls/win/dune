@@ -1,0 +1,5 @@
+(library
+ (name irc_io_tls)              ; exports module Irc_io_tls
+ (public_name omni-irc-io-tls)  ; same public name as Unix
+ (enabled_if (= %{system} "win32"))
+ (libraries lwt omni-irc-sig))

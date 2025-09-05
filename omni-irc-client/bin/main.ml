@@ -42,11 +42,16 @@ let select_ui (name_opt : string option) : (module UIX.S) =
   match name_opt with
   | None | Some "" -> (module Irc_ui_notty.Ui : UIX.S)
   | Some name ->
-      begin match String.lowercase_ascii name with
-      | "notty" -> (module Irc_ui_notty.Ui : UIX.S)
-      | "headless" -> (module Irc_ui_headless.Ui : UIX.S)
-      | _ -> prerr_endline ("Unknown UI '" ^ name ^ "'. Try: notty"); exit 2
-      end
+    begin match String.lowercase_ascii name with
+    | "notty"   -> (module Irc_ui_notty.Ui : UIX.S)
+    | "headless" ->
+        if Sys.win32
+        then (module Irc_ui_loopback.Ui : UIX.S)  (* Windows → TCP loopback *)
+        else (module Irc_ui_headless.Ui : UIX.S)  (* Unix → UDS *)
+    | _ -> prerr_endline ("Unknown UI '" ^ name ^ "'. Try: notty|headless"); exit 2
+    end
+
+let default_port () = 8765 (* Default port for loopback ui *)
 
 let () =
   let server    = ref "" in
@@ -112,10 +117,6 @@ let () =
     let want_headless =
       !use_headless || (String.lowercase_ascii !ui_name = "headless")
     in
-    (if want_headless && Sys.win32 then (
-        prerr_endline "--headless requires a Unix platform (Unix domain sockets).";
-        exit 2
-    ));
     let ui_opt =
       if want_headless then Some "headless"
       else if !ui_name = "" then None else Some !ui_name
@@ -123,8 +124,19 @@ let () =
     (* If headless, decide socket path now and publish it for the UI *)
     (match ui_opt with
       | Some "headless" ->
-        let path = match !socket_override with Some p -> p | None -> default_sock () in
-        Unix.putenv "OMNI_IRC_SOCKET" path
+        if Sys.win32 then (
+          let port =
+            match !socket_override with
+            | Some s -> (try int_of_string s with _ -> default_port ())
+            | None -> default_port ()
+          in
+          Unix.putenv "OMNI_IRC_PORT" (string_of_int port)
+        ) else (
+          let path =
+            match !socket_override with Some p -> p | None -> default_sock ()
+          in
+          Unix.putenv "OMNI_IRC_SOCKET" path
+        )
       | _ -> ());
     let ui_mod = select_ui ui_opt in
 

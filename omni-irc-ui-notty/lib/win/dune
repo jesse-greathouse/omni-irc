@@ -1,0 +1,5 @@
+(library
+ (name irc_ui_notty)                      ; exports module Irc_ui_notty
+ (public_name omni-irc-ui-notty)          ; same public name as Unix
+ (enabled_if (= %{system} "win32"))
+ (libraries lwt omni-irc-ui))

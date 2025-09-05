@@ -1,0 +1,3 @@
+(library
+ (name irc_ui_loopback)
+ (libraries lwt lwt.unix yojson omni-irc-ui))
