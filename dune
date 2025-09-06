@@ -3,7 +3,7 @@
  (alias info)
  (targets omni-info.txt)
  (deps %{exe:omni-irc-client/bin/main.exe})
- (enabled_if (<> %{os_type} "Win32"))
+ (enabled_if (<> %{ocaml-config:system} "win32"))
  (action
   (bash "ROOT=$(realpath %{workspace_root});
          EXE=$(realpath %{exe:omni-irc-client/bin/main.exe});

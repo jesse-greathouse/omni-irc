@@ -1,6 +1,6 @@
 (lang dune 3.20)
 
-(name omni_irc)
+(name omni-irc)
 
 (generate_opam_files true)
 

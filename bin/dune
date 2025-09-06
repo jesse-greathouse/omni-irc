@@ -1,7 +1,7 @@
 ; Unix-like targets: bin/omni (with +x)
 (rule
  (targets omni)
- (enabled_if (<> %{os_type} "Win32"))
+ (enabled_if (<> %{ocaml-config:system} "win32"))
  (deps %{exe:../omni-irc-client/bin/main.exe})
  (action
   (bash "cp %{exe:../omni-irc-client/bin/main.exe} %{targets} && chmod +x %{targets}"))
@@ -18,7 +18,7 @@
 ; Convenience aliases
 (alias
  (name omni)
- (enabled_if (<> %{os_type} "Win32"))
+ (enabled_if (<> %{ocaml-config:system} "win32"))
  (deps omni))
 
 (alias

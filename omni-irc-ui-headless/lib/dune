@@ -1,4 +1,4 @@
 (library
  (name irc_ui_headless)
- (enabled_if (<> %{os_type} "Win32"))
+ (enabled_if (<> %{ocaml-config:system} "win32"))
  (libraries lwt lwt.unix yojson omni-irc-ui))
