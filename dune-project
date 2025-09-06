@@ -15,6 +15,22 @@
 (license "LicenseRef-OmniIRC-ViewOnly-1.0")
 
 (package
+ (name omni-irc)
+ (synopsis "Omni IRC: meta package for the monorepo")
+ (description "Meta package for the Omni-IRC libraries. Install the specific subpackages: omni-irc-sig, omni-irc-conn, omni-irc-engine, omni-irc-io-{tcp,tls,unixsock}, omni-irc-ui, omni-irc-ui-notty (and optionally omni-irc-client).")
+ (allow_empty)
+ (depends
+  (ocaml (>= 5.0))
+  omni-irc-sig
+  omni-irc-conn
+  omni-irc-engine
+  omni-irc-io-tcp
+  omni-irc-io-tls
+  omni-irc-io-unixsock
+  omni-irc-ui
+  omni-irc-ui-notty))
+
+(package
  (name omni-irc-sig)
  (synopsis "Omni IRC: tiny IO signature")
  (depends lwt))
