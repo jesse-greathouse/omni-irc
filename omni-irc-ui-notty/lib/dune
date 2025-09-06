@@ -1,6 +1,6 @@
 (library
  (name irc_ui_notty)
  (public_name omni-irc-ui-notty)
- (enabled_if (<> %{system} "win32"))
+ (enabled_if (<> %{os_type} "Win32"))
  (libraries lwt notty notty.unix notty.lwt yojson omni-irc-ui)
  (flags :standard -warn-error +a-39))

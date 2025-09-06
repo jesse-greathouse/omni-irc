@@ -48,7 +48,7 @@
 
 (package
  (name omni-irc-ui-notty)
- (synopsis "Omni IRC: Notty-Lwt TUI")
+ (synopsis "Omni IRC: Notty-Lwt User Interface")
  (depends lwt notty yojson omni-irc-ui))
 
 (package
