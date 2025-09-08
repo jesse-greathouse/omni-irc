@@ -6,10 +6,14 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
-      options: --user=opam   # match the image's non-root user
     steps:
       - uses: actions/checkout@v4
 
+      # Make the workspace writable by 'opam'
+      - name: Fix workspace permissions
+        run: chown -R opam:opam /__w
+
+      # (Optional) cache
       - name: Cache opam
         uses: actions/cache@v4
         with:
@@ -20,12 +24,11 @@ jobs:
           restore-keys: |
             opam-${{ runner.os }}-
 
-      # Install deps (dune will already be present in the image, but keep this)
       - name: Install deps
-        run: opam install . --deps-only -y
+        run: su - opam -c 'opam install . --deps-only -y'
 
       - name: Build
-        run: opam exec -- dune build @install
+        run: su - opam -c 'opam exec -- dune build @install'
 
-      - name: Lint opam files
-        run: opam exec -- opam lint *.opam
+      - name: Lint
+        run: su - opam -c 'opam exec -- opam lint *.opam'
