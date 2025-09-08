@@ -1,5 +1,0 @@
-(library
- (name irc_ui_headless)
- (enabled_if (= %{os_type} "Win32"))
- (libraries lwt omni-irc-ui)
- (modules ui))
