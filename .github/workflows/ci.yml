@@ -1,13 +1,21 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: ocaml/opam:debian-12-ocaml-5.3
+      options: --user=opam   # match the image's non-root user
     steps:
       - uses: actions/checkout@v4
-      - uses: ocaml/setup-ocaml@v3
-        with:
-          ocaml-compiler: 5.3.0
-      - run: opam install . --deps-only -y
-      - run: dune build @install
-      - run: opam lint *.opam
+
+      # Install deps (dune will already be present in the image, but keep this)
+      - name: Install deps
+        run: opam install . --deps-only -y
+
+      - name: Build
+        run: opam exec -- dune build @install
+
+      - name: Lint opam files
+        run: opam exec -- opam lint *.opam

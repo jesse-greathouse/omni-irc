@@ -1,5 +1,6 @@
 .vscode/
 
+/dist-opam/
 /_build/
 /_opam/
 *.install
@@ -8,6 +9,8 @@
 *.merlin
 *.bk
 *.log
+omni-irc*.tbz
+omni-irc*.tgz
 commit.txt
 omni-info.txt
 bin/omni
