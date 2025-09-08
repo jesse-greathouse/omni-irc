@@ -10,6 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache opam
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/opam/.opam
+            /home/opam/.cache/dune
+          key: opam-${{ runner.os }}-${{ hashFiles('**/*.opam', 'dune-project') }}
+          restore-keys: |
+            opam-${{ runner.os }}-
+
       # Install deps (dune will already be present in the image, but keep this)
       - name: Install deps
         run: opam install . --deps-only -y
