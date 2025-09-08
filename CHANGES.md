@@ -7,3 +7,18 @@
 ## v0.1.6 (2025-09-08)
 
 - Updated Publishing Info
+
+## v0.1.9 (2025-09-08)
+
+- Added **first-class Windows (Win32) build support**:
+  - Split client entrypoints:
+    - `main_unix.ml` for Unix (TLS, Notty, AF_UNIX headless).
+    - `main_win32.ml` for Windows (TCP + loopback UI).
+  - Dune `enabled_if` stanzas now select the proper entrypoint per OS.
+  - `bin/omni` (Unix) and `bin/omni.exe` (Windows) wrappers updated.
+- Gated non-portable dependencies in `dune-project` and opam files:
+  - `omni-irc-io-tls`, `omni-irc-ui-notty`, and `omni-irc-io-unixsock` build only on non-Windows.
+  - `(allow_empty)` added to `omni-irc-io-tls` package for Windows compatibility.
+- Cleaned up old root `dune` and redundant `.unix` dune fragments.
+- **Result:** Windows builds now succeed; developers can connect to IRC on Win32
+  via TCP and the loopback UI (`telnet 127.0.0.1 8765`).

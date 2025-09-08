@@ -25,11 +25,10 @@
   omni-irc-conn
   omni-irc-engine
   omni-irc-io-tcp
-  omni-irc-io-tls
-  (omni-irc-io-unixsock (and (<> os "win32"))) ; AF_UNIX: skip on Windows
-  omni-irc-io-unixsock
+  (omni-irc-io-tls     (and (<> os "win32")))
+  (omni-irc-io-unixsock (and (<> os "win32")))
   omni-irc-ui
-  (omni-irc-ui-notty (and (<> os "win32"))))) ; Notty not on Windows
+  (omni-irc-ui-notty   (and (<> os "win32")))))
 
 (package
  (name omni-irc-sig)
@@ -44,6 +43,7 @@
 (package
  (name omni-irc-io-tls)
  (synopsis "Omni IRC: TLS IO")
+ (allow_empty)
  (depends
   lwt
   ;; TLS stack only on non-Windows
@@ -93,8 +93,8 @@
   yojson
   omni-irc-sig
   omni-irc-conn
-  (omni-irc-io-unixsock (and (<> os "win32"))) ; don’t drag AF_UNIX on Windows
   omni-irc-io-tcp
-  omni-irc-io-tls
+  (omni-irc-io-tls       (and (<> os "win32")))
+  (omni-irc-io-unixsock  (and (<> os "win32")))
   omni-irc-ui
-  (omni-irc-ui-notty (and (<> os "win32")))))
+  (omni-irc-ui-notty     (and (<> os "win32")))))
