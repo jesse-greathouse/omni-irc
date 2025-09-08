@@ -1,3 +1,4 @@
 (library
  (name irc_ui_loopback)
+ (package omni-irc-client)
  (libraries lwt lwt.unix yojson omni-irc-ui))
