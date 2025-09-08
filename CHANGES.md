@@ -22,3 +22,18 @@
 - Cleaned up old root `dune` and redundant `.unix` dune fragments.
 - **Result:** Windows builds now succeed; developers can connect to IRC on Win32
   via TCP and the loopback UI (`telnet 127.0.0.1 8765`).
+
+## v0.1.11 (2025-09-08)
+
+- **Windows packaging & CI fixes**
+  - Ensure `omni-irc-ui-notty` and `omni-irc-io-unixsock` are **marked unavailable on Windows** in opam (`{ os != "win32" }`), so the solver skips them instead of failing the build.
+  - Keep client installable on Windows via the loopback UI only; TLS and Notty remain non-Windows features.
+
+- **Client build split**
+  - Separate Unix and Windows entrypoints (`main_unix` / `main_win32`) to avoid conditional runtime wiring (TLS/Notty/Unix-socket vs. loopback TCP on Windows).
+
+- **Opam/release housekeeping**
+  - Consistent release asset naming (`omni-irc-<ver>.tbz`) referenced by all subpackages.
+  - Minor metadata cleanups and dependency graph tightening for smoother pin/install.
+
+_No user-facing protocol changes; this is a packaging/build reliability release._
