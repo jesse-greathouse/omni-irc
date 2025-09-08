@@ -6,14 +6,15 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
+      options: --user 0:0 
     steps:
       - uses: actions/checkout@v4
 
-      # Make the workspace writable by 'opam'
-      - name: Fix workspace permissions
-        run: chown -R opam:opam /__w
+      - name: Fix permissions for opam user
+        run: |
+          chown -R opam:opam "$GITHUB_WORKSPACE" /__w/_temp /github/home || true
 
-      # (Optional) cache
+      # cache opam/dune between runs
       - name: Cache opam
         uses: actions/cache@v4
         with:
