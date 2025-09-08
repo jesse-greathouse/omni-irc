@@ -8,11 +8,12 @@
 
 (maintainers "Jesse Greathouse <jesse.greathouse@gmail.com>")
 (authors "Jesse Greathouse")
-(homepage "https://github.com/jessegreathouse/omni-irc")
-(bug_reports "https://github.com/jessegreathouse/omni-irc/issues")
-(source (github jessegreathouse/omni-irc))
-(documentation "https://github.com/jessegreathouse/omni-irc#readme")
+(homepage "https://github.com/jesse-greathouse/omni-irc")
+(bug_reports "https://github.com/jesse-greathouse/omni-irc/issues")
+(source (github jesse-greathouse/omni-irc))
+(documentation "https://github.com/jesse-greathouse/omni-irc#readme")
 (license "LicenseRef-OmniIRC-ViewOnly-1.0")
+(source (github jesse-greathouse/omni-irc))
 
 (package
  (name omni-irc)
