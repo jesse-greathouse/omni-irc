@@ -1,5 +1,0 @@
-(library
- (name irc_io_tls)
- (public_name omni-irc-io-tls)
- (enabled_if (= %{os_type} "Win32"))
- (libraries lwt))
