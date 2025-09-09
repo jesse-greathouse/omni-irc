@@ -11,8 +11,8 @@ bug-reports: "https://github.com/jesse-greathouse/omni-irc/issues"
 depends: [
   "dune" {>= "3.20"}
   "lwt"
-  "notty" {"os" != "win32"}
-  "yojson" {"os" != "win32"}
+  "notty" {os != "win32"}
+  "yojson" {os != "win32"}
   "omni-irc-ui"
   "odoc" {with-doc}
 ]
