@@ -82,9 +82,14 @@ val channel_ensure : t -> string -> Channel.t
 val channel_list_find   : t -> string -> Channel_list.entry option
 val channel_list_upsert :
   t -> name:string -> num_users:int -> topic:string option -> unit
+val chanlist_upsert_unit :
+  t -> name:string -> num_users:int -> topic:string option -> unit Lwt.t
 
-val get_channels : t -> Channel_list.t Lwt.t
 (** Legacy, time-gated “send LIST then wait briefly” function (still available). *)
+val get_channels : t -> Channel_list.t Lwt.t
+
+(** Unit-returning shim for Core.CLIENT; calls [get_channels] and discards the result. *)
+val get_channels_unit : t -> unit Lwt.t
 
 (** New flow for /list: gate + async emit on 323. *)
 val list_request :

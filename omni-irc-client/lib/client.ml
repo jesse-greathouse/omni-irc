@@ -357,6 +357,10 @@ let get_channels t : Channel_list.t Lwt.t =
     Lwt.return t.chanlist
   end
 
+let get_channels_unit t =
+  get_channels t >>= fun _ ->
+  Lwt.return_unit
+
 let json_of_chanlist ?filter ?limit (t : t) : Yojson.Safe.t =
   let s = sanitize_for_json in
   let open Channel_list in
@@ -921,6 +925,10 @@ let channel_list_find t name =
 
 let channel_list_upsert t ~name ~num_users ~topic =
   t.chanlist <- Channel_list.upsert ~name ~num_users ~topic t.chanlist
+
+let chanlist_upsert_unit t ~name ~num_users ~topic =
+  channel_list_upsert t ~name ~num_users ~topic;
+  Lwt.return_unit
 
 (* For compatibility / non-323 contexts *)
 let get_and_emit_channels t ?filter ?limit () : unit Lwt.t =
