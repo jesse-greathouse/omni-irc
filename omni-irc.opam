@@ -17,10 +17,10 @@ depends: [
   "omni-irc-conn"
   "omni-irc-engine"
   "omni-irc-io-tcp"
-  "omni-irc-io-tls" {os != "win32"}
-  "omni-irc-io-unixsock" {os != "win32"}
+  "omni-irc-io-tls" {"os" != "win32"}
+  "omni-irc-io-unixsock" {"os" != "win32"}
   "omni-irc-ui"
-  "omni-irc-ui-notty" {os != "win32"}
+  "omni-irc-ui-notty" {"os" != "win32"}
   "odoc" {with-doc}
 ]
 build: [

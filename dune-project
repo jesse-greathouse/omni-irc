@@ -72,7 +72,7 @@
  (depends
   lwt
   (notty  (and (<> os "win32")))
-  (yojson (and (<> os "win32")))
+  (yojson)
   omni-irc-ui))
 
 (package
