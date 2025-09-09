@@ -9,5 +9,4 @@
   x509
   ca-certs
   domain-name
-  cstruct
   omni-irc-sig))

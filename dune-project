@@ -51,7 +51,6 @@
   (x509        (and (<> os "win32")))
   (ca-certs    (and (<> os "win32")))
   (domain-name (and (<> os "win32")))
-  (cstruct     (and (<> os "win32")))
   omni-irc-sig))
 
 (package

@@ -95,7 +95,7 @@ The client maintains a **single pointer** `self_user : User.t option` that refer
 * **OCaml 5.3+** (tested with 5.3.0)
 * **dune 3.20+**
 * `opam` (recommended)
-* TLS backend: `tls-lwt`, `x509`, `ca-certs`, `domain-name`, `cstruct`
+* TLS backend: `tls-lwt`, `x509`, `ca-certs`, `domain-name`
 * Notty UI: `notty`, `notty.lwt` (POSIX-oriented)
 
 Install deps:

@@ -37,3 +37,8 @@
   - Minor metadata cleanups and dependency graph tightening for smoother pin/install.
 
 _No user-facing protocol changes; this is a packaging/build reliability release._
+
+## v0.1.12 (2025-09-09)
+
+- **Removed cstruct dependency**
+  - @hannesm pointed out [in this post](https://github.com/jesse-greathouse/omni-irc/issues/1) That the ocaml-tls library had not used cstruct since 1.0.0  (released August 2024)

@@ -14,7 +14,6 @@ depends: [
   "x509" {"os" != "win32"}
   "ca-certs" {"os" != "win32"}
   "domain-name" {"os" != "win32"}
-  "cstruct" {"os" != "win32"}
   "omni-irc-sig"
   "odoc" {with-doc}
 ]
