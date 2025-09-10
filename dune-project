@@ -47,11 +47,10 @@
  (allow_empty)
  (depends
   lwt
-  ;; TLS stack only on non-Windows
-  (tls-lwt     (and (<> os "win32")))
-  (x509        (and (<> os "win32")))
-  (ca-certs    (and (<> os "win32")))
-  (domain-name (and (<> os "win32")))
+  tls-lwt
+  x509
+  ca-certs
+  domain-name
   omni-irc-sig))
 
 (package

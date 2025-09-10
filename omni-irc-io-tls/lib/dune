@@ -1,12 +1,13 @@
 (library
  (name irc_io_tls)
  (public_name omni-irc-io-tls)
- (enabled_if (<> %{os_type} "Win32"))
  (modules tls_io)
  (libraries
-  lwt.unix
+  omni-irc-sig
   tls-lwt
+  mirage-crypto-rng.unix
+  mirage-crypto-ec
   x509
   ca-certs
-  domain-name
-  omni-irc-sig))
+  ca-certs-nss
+  lwt.unix))

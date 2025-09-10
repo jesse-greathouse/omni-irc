@@ -873,9 +873,10 @@ let start_net t =
       Lwt.finalize (fun () -> Lwt.pick [ rx_loop (); tx_loop () ])
                     (fun () -> Lwt.catch (fun () -> C.close conn) (fun _ -> Lwt.return_unit))
     )
-    (function
-      | Exit -> Lwt.return_unit  (* user quit before connecting *)
-      | _exn -> Lwt.return_unit)
+    (fun exn ->
+     (* SHOW the reason, then go back to waiting so you can /connect again *)
+      notify t (Printf.sprintf "Connect failed: %s" (Printexc.to_string exn)) >>= fun () ->
+      notify t "(Issue /connect to retry…)" )
 
 
 let start t =
