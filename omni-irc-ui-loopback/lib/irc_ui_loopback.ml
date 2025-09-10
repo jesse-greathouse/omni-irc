@@ -24,8 +24,8 @@ module Ui : UIX.S = struct
     | None   -> Unix.inet_addr_loopback
 
   let default_port () =
-    (* Allow override via OMNI_IRC_PORT; default 8765 *)
-    int_of_env "OMNI_IRC_PORT" ~default:8765
+    (* Allow override via OMNI_IRC_PORT; default 58217 *)
+    int_of_env "OMNI_IRC_PORT" ~default:58217
 
   let create () =
     { listening=None; active=None; closed=false;
