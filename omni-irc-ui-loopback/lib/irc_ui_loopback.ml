@@ -23,6 +23,7 @@ module Ui : UIX.S = struct
     | Some s -> Unix.inet_addr_of_string s
     | None   -> Unix.inet_addr_loopback
 
+  (* omni-irc-ui-loopback/lib/irc_ui_loopback.ml *)
   let default_port () =
     (* Allow override via OMNI_IRC_PORT; default 58217 *)
     int_of_env "OMNI_IRC_PORT" ~default:58217

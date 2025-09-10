@@ -72,6 +72,10 @@
  (depends
   lwt
   (notty  (and (<> os "win32")))
+<<<<<<< HEAD
+=======
+  yojson
+>>>>>>> c30d6de4c19f7008e4f808b12c718d63549c842e
   omni-irc-ui))
 
 (package
