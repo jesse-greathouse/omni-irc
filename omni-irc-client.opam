@@ -9,18 +9,17 @@ homepage: "https://github.com/jesse-greathouse/omni-irc"
 doc: "https://github.com/jesse-greathouse/omni-irc#readme"
 bug-reports: "https://github.com/jesse-greathouse/omni-irc/issues"
 depends: [
-  "ocaml" {>= "5.1"}
-  "dune"  {>= "3.14"}
+  "dune" {>= "3.20"}
   "lwt"
-  "lwt_ppx"
+  "yojson"
   "omni-irc-sig"
   "omni-irc-conn"
   "omni-irc-engine"
   "omni-irc-io-tcp"
+  "omni-irc-io-tls" {"os" != "win32"}
+  "omni-irc-io-unixsock" {"os" != "win32"}
   "omni-irc-ui"
-  "omni-irc-ui-notty"     { "os" != "win32" }   # not available on Windows
-  "omni-irc-io-tls"       { "os" != "win32" }   # Unix client links TLS; Windows build does not
-  "omni-irc-io-unixsock"  { "os" != "win32" }   # only used by Unix headless UI
+  "omni-irc-ui-notty" {"os" != "win32"}
   "odoc" {with-doc}
 ]
 build: [
