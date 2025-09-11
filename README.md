@@ -14,9 +14,11 @@ Omni-IRC is a modular, experimental IRC client written in [OCaml](https://ocaml.
 * **`omni-irc-sig`** — tiny shared signatures (notably the IO signature).
 * **IO backends**
 
-  * **`omni-irc-io-tcp`** — plain TCP via `lwt.unix`.
-  * **`omni-irc-io-tls`** — TLS via `tls-lwt` (pure OCaml). CA verification via `ca-certs` (enabled by default).
-  * **`omni-irc-io-unixsock`** — AF\_UNIX helper (simple single-consumer bridge).
+* **`omni-irc-io-tcp`** — plain TCP via `lwt.unix`.
+* **`omni-irc-io-tls`** — TLS via `tls-lwt` (pure OCaml).
+  * CA verification via `ca-certs` (enabled by default).
+  * Works on Linux/macOS **and Windows** (no `ca-certs-nss` dependency required).
+* **`omni-irc-io-unixsock`** — AF\_UNIX helper (simple single-consumer bridge).
 * **`omni-irc-conn`** — **connector functor** that turns any IO backend into a uniform `{ connect; recv; send; close }` API.
 * **`omni-irc-engine`** — parser + event dispatcher + default core handlers.
 
@@ -31,13 +33,23 @@ Omni-IRC is a modular, experimental IRC client written in [OCaml](https://ocaml.
     * `QUIT`/`KILL`/`JOIN`/`PART` → model updates
     * `MODE` (user & channel) → mode tracking
     * `WHOIS` (`311/312/319/338/671/318`) → enrich user model
-* **`omni-irc-ui`** — UI contracts.
+* **`omni-irc-ui`** — UI contracts **and** the packaged loopback UI:
+  * **`omni-irc-ui.loopback`** — TCP loopback UI library (for embedding / external GUIs).
 * **`omni-irc-ui-notty`** — Notty/Lwt terminal UI (input line, scrollback, simple keybinds).
+  * Not built on Windows (`os != win32`).
 * **`omni-irc-client`** — thin orchestrator:
 
   * Wires IO ⇄ connector ⇄ engine ⇄ model
   * Bridges UI commands to client actions
   * Exports **state snapshots** to the UI via **`CLIENT [JSON]`** meta-lines (one-way, “React-ish” snapshot flow)
+
+### Platform matrix (what builds where)
+
+| Component                 | Linux/macOS | Windows |
+|--------------------------|-------------|---------|
+| TLS (`omni-irc-io-tls`)  | ✅           | ✅       |
+| Notty UI (`omni-irc-ui-notty`) | ✅     | ❌       |
+| AF_UNIX bridge (`omni-irc-io-unixsock`) | ✅ | ❌       |
 
 ### Models (authoritative on the client)
 
@@ -95,14 +107,18 @@ The client maintains a **single pointer** `self_user : User.t option` that refer
 * **OCaml 5.3+** (tested with 5.3.0)
 * **dune 3.20+**
 * `opam` (recommended)
-* TLS backend: `tls-lwt`, `x509`, `ca-certs`, `domain-name`
-* Notty UI: `notty`, `notty.lwt` (POSIX-oriented)
+* TLS backend: `tls-lwt`, `x509`, `ca-certs`, `domain-name`, `mirage-crypto-rng`, `mirage-crypto-ec`
+* Notty UI: `notty`, `notty.lwt` (POSIX-oriented; not available on Windows)
 
-Install deps:
+### Installing from source (recommended flow for consumers)
+
+You can install from this repo via opam pin to pull the monorepo packages:
 
 ```sh
-opam switch create . ocaml-base-compiler.5.3.0   # or your preferred 5.x
-opam install . --deps-only
+  opam pin add omni-irc git+https://github.com/jesse-greathouse/omni-irc.git#main -y 
+  # or pin a tag once released: 
+  opam pin add omni-irc git+https://github.com/jesse-greathouse/omni-irc.git#v0.1.13 -y
+  # Then install the thin client (brings required libs): +opam install omni-irc-client
 ```
 
 ---
@@ -134,7 +150,26 @@ cat omni-info.txt
 
 ## Run
 
-TLS example (Libera.Chat):
+### UI selection & cross-platform behavior
+
+There are two runtime-selectable UI adapters:
+
+* notty — terminal UI (Linux/macOS). Not built on Windows.
+* loopback — TCP loopback UI (all platforms). Good for embedding/external GUIs.
+
+The --headless flag is a portable toggle:
+
+* On Linux/macOS it selects the POSIX “headless” UI (AF_UNIX bridge).
+* On Windows it is tantamount to --ui loopback.
+
+Default loopback port:
+
+* Windows: 58217
+* Linux/macOS: 8765
+
+Override with --socket <socket-file>.
+
+### TLS example (Libera.Chat):
 
 ```sh
 dune exec omni-irc-client -- \
@@ -158,12 +193,14 @@ Options:
 
 * `--server <host>` **required**
 * `--port <int>` **required**
-* `--tls` (enable TLS backend)
+* `--tls` (enable TLS backend; uses ca-certs for verification by default)
 * `--nick <nick>` (initial nick; also seeds the `self_user` pointer)
 * `--realname <name>` (initial real name used in `USER`)
-* `--ui <name>` (defaults to `notty`; currently only `notty` exists)
+* `--ui <name>` choose notty (POSIX) or loopback (all platforms)
+* `--headless` portable toggle (POSIX: AF_UNIX headless; Windows: maps to loopback)
+* `--socket <port>` TCP port for loopback/headless UI bridge (defaults vary by OS; see above)
 
-> TLS notes: certificate verification is **on by default** in `omni-irc-io-tls` (via `ca-certs`). You can override SNI/ALPN in code, but the default client uses standard host-based SNI.
+> TLS notes: certificate verification is on by default (via ca-certs). The client uses host-based SNI; override details in code if you need custom authenticators.
 
 ---
 
@@ -197,6 +234,23 @@ These are parsed by the UI and forwarded to the client as typed commands:
   * `(channel updating: #ocaml)` when membership/topics/modes change
   * `(Updating user nick: …)` when WHOIS/user data is upserted
   * `(self: …)` when pointer/upsert for the self user arrives
+
+## Loopback UI: quick reference
+
+The loopback UI exposes the same CLIENT JSON snapshots and accepts the same command lines over a local TCP socket.
+
+* Default port: 58217 (Windows) / 8765 (Linux/macOS)
+* Change with --socket [socket-file]
+* Ideal for external GUIs (e.g. an Electron/React app) to connect and render state.
+
+Example:
+
+```sh
+# Windows example, TLS + loopback UI on the default port: 
+omni-irc-client.exe --server irc.libera.chat --port 6697 --tls --ui loopback
+# or equivalently: 
+omni-irc-client.exe --server irc.libera.chat --port 6697 --tls --headless
+```
 
 ---
 
@@ -244,6 +298,9 @@ dune clean
 * Add a `/self whois` convenience (time-gated WHOIS refresh + upsert).
 * Broaden parser/handlers (more numerics, message tags, CTCP).
 * Additional UI backends (curses, web).
+* Windows parity:
+  * optional POSIX-feature shims where it makes sense,
+  * more examples using the loopback UI (e.g. GUI demos).
 * Expand AF\_UNIX usage for IPC/testing harnesses.
 
 ---
