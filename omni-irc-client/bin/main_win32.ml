@@ -9,6 +9,15 @@ module Engine     = Irc_engine.Engine.Make(P)
 module Core       = Irc_engine.Core.Make(P)
 module Client     = Irc_client.Client
 
+(* TLS backend as a DIAL (optional, selected by --tls) *)
+module Net_tls : DIAL = struct
+  module Endpoint = struct
+    type t = Irc_io_tls.Tls_io.Endpoint.t
+    let make ~host ~port = Irc_io_tls.Tls_io.Endpoint.make ~host ~port ()
+  end
+  module IO = Irc_io_tls.Tls_io.IO
+end
+
 (* Plain TCP backend as a DIAL *)
 module Net_tcp : DIAL = struct
   module Endpoint = struct
@@ -40,7 +49,7 @@ let select_ui (name_opt : string option) : (module UIX.S) =
         prerr_endline ("Unknown UI '" ^ name ^ "'. Try: headless|loopback"); exit 2
     end
 
-let default_port () = 8765
+let default_port () = 58217
 
 let () =
   let server    = ref "" in
@@ -48,6 +57,8 @@ let () =
   let nick      = ref "" in
   let realname  = ref "" in
   let ui_name   = ref "" in
+  let use_tls   = ref false in
+  let use_headless = ref false in
   let socket_override = ref None in
   let set_socket p = socket_override := Some p in
 
@@ -58,10 +69,14 @@ let () =
       ("--nick",     Arg.Set_string nick,     "IRC nickname (optional init)");
       ("--realname", Arg.Set_string realname, "IRC realname (optional init)");
       ("--ui",       Arg.Set_string ui_name,  "UI adapter: headless|loopback (default: loopback)");
-      ("--socket",   Arg.String set_socket,   "TCP PORT for loopback UI (default: 8765)");
+      ("--tls",      Arg.Set use_tls,         "Enable TLS (ocaml-tls backend)");
+      ("--headless", Arg.Set use_headless,    "Force headless UI (loopback on Windows)");
+      ("--socket",   Arg.String set_socket,   "TCP PORT for loopback UI (default: 58217)");
     ]
   in
-  let usage = "omni-irc-client --server HOST --port PORT [--ui headless] (Windows)" in
+  let usage =
+    "omni-irc-client --server HOST --port PORT [--tls] [--headless|--ui headless|loopback] (Windows)"
+  in
   Arg.parse specl (fun _ -> ()) usage;
 
   let missing what () = prerr_endline ("missing required arg: " ^ what); exit 2 in
@@ -69,7 +84,9 @@ let () =
   if !port   <= 0 then missing "--port" ();
 
   Lwt_main.run begin
-    let (module Net : DIAL) = (module Net_tcp : DIAL) in
+    let (module Net : DIAL) =
+      if !use_tls then (module Net_tls : DIAL) else (module Net_tcp : DIAL)
+    in
     let module C = Conn.Make(Net) in
 
     let cfg : Conn.cfg = {
@@ -82,8 +99,13 @@ let () =
       keepalive = true;
     } in
 
-    (* Decide UI + export TCP port env for the loopback UI *)
-    let ui_opt = if !ui_name = "" then None else Some !ui_name in
+    (* Decide UI:
+      - --headless is a portable toggle; on Windows it means loopback UI.
+       - --ui can still explicitly choose "headless"|"loopback". *)
+    let ui_opt =
+      if !use_headless then Some "headless"
+      else if !ui_name = "" then None else Some !ui_name
+    in
     let port_for_ui =
       match !socket_override with
       | Some s -> (try int_of_string s with _ -> default_port ())
@@ -138,6 +160,7 @@ let () =
         }
         ()
     in
-    Lwt_io.eprintf "[client] Windows build: TCP transport only\n%!" >>= fun () ->
+    Lwt_io.eprintf "[client] using %s\n%!"
+      (if !use_tls then "TLS transport" else "TCP transport") >>= fun () ->
     Client.start client
   end

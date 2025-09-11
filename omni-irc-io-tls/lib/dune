@@ -9,5 +9,4 @@
   mirage-crypto-ec
   x509
   ca-certs
-  ca-certs-nss
   lwt.unix))

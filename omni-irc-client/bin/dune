@@ -17,7 +17,7 @@
   irc_ui_headless
   irc_ui_loopback))
 
-; Windows build: no TLS, no Notty, no headless-unixsock
+; Windows build: no Notty, no headless-unixsock
 (executable
  (name main_win32)            ; was: omni_win
  (public_name omni-irc-client)
@@ -28,6 +28,7 @@
   lwt.unix
   omni-irc-conn
   omni-irc-io-tcp
+  omni-irc-io-tls
   omni-irc-engine
   omni-irc-client.lib
   irc_ui
