@@ -26,7 +26,7 @@
   omni-irc-conn
   omni-irc-engine
   omni-irc-io-tcp
-  (omni-irc-io-tls     (and (<> os "win32")))
+  omni-irc-io-tls
   (omni-irc-io-unixsock (and (<> os "win32")))
   omni-irc-ui
   (omni-irc-ui-notty   (and (<> os "win32")))))
@@ -94,7 +94,7 @@
   omni-irc-conn
   omni-irc-engine
   omni-irc-io-tcp
-  (omni-irc-io-tls       (and (<> os "win32")))
+  omni-irc-io-tls
   (omni-irc-io-unixsock  (and (<> os "win32")))
   omni-irc-ui
   (omni-irc-ui-notty     (and (<> os "win32")))))
