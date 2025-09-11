@@ -5,7 +5,7 @@
  (libraries
   omni-irc-sig
   tls-lwt
-  mirage-crypto-rng.unix
+  mirage-crypto-rng
   mirage-crypto-ec
   x509
   ca-certs

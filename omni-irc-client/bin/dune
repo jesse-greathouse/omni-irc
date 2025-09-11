@@ -1,4 +1,4 @@
-; Unix build: TLS + Notty + headless unixsock
+; Unix build: Notty + headless unixsock
 (executable
  (name main_unix)
  (public_name omni-irc-client)
@@ -19,7 +19,7 @@
 
 ; Windows build: no Notty, no headless-unixsock
 (executable
- (name main_win32)            ; was: omni_win
+ (name main_win32)
  (public_name omni-irc-client)
  (package omni-irc-client)
  (modules main_win32)

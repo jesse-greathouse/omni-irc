@@ -20,8 +20,6 @@ module Endpoint = struct
     { host; port; sni; verify; alpn = Option.value ~default:[] alpn }
 end
 
-let () = Mirage_crypto_rng_unix.use_default ()
-
 let domain_host_of_string (h : string) : [ `host ] Domain_name.t option =
   match Domain_name.of_string h with
   | Ok dn -> (match Domain_name.host dn with Ok host -> Some host | Error _ -> None)
@@ -59,7 +57,7 @@ module IO : Irc_sig.Io.S with type endpoint = Endpoint.t and type t = Tls_lwt.Un
           | Some a -> Lwt.return a
           | None ->
             (* 2) Fallback to Mozilla/NSS bundle *)
-            match Ca_certs_nss.authenticator () with
+            match Ca_certs.authenticator () with
             | Ok a -> Lwt.return a
             | Error (`Msg m2) ->
                 Lwt.fail_with ("omni-irc-io-tls: no CA roots found (system/NSS): " ^ m2)

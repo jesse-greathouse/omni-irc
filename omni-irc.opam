@@ -21,6 +21,7 @@ depends: [
   "omni-irc-io-unixsock" {os != "win32"}
   "omni-irc-ui"
   "omni-irc-ui-notty" {os != "win32"}
+  "omni-irc-ui-headless" {os != "win32"}
   "odoc" {with-doc}
 ]
 build: [
