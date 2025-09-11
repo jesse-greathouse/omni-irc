@@ -15,7 +15,7 @@
   irc_ui
   omni-irc-ui-notty
   irc_ui_headless
-  irc_ui_loopback))
+  omni-irc-ui.loopback))
 
 ; Windows build: no Notty, no headless-unixsock
 (executable
@@ -32,4 +32,4 @@
   omni-irc-engine
   omni-irc-client.lib
   irc_ui
-  irc_ui_loopback))
+  omni-irc-ui.loopback))
