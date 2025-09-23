@@ -26,7 +26,7 @@
 ## v0.1.11 (2025-09-08)
 
 - **Windows packaging & CI fixes**
-  - Ensure `omni-irc-ui-notty` and `omni-irc-io-unixsock` are **marked unavailable on Windows** in opam (`{ os != "win32" }`), so the solver skips them instead of failing the build.
+  - Ensure `omni-irc-ui-notty` and `omni-irc-io-unixsock` are **marked unavailable on Windows** in opam (`{ "os" != "win32" }`), so the solver skips them instead of failing the build.
   - Keep client installable on Windows via the loopback UI only; TLS and Notty remain non-Windows features.
 
 - **Client build split**
