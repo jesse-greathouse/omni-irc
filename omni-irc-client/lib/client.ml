@@ -184,15 +184,6 @@ let user_ensure t nick =
       t.users <- SMap.add k u t.users;
       u
 
-let user_ensure_emit (t : t) (nick : string) : User.t Lwt.t =
-  let k = user_key_of_nick nick in
-  match SMap.find_opt k t.users with
-  | Some u -> Lwt.return u
-  | None ->
-      let u = User.make nick in
-      t.users <- SMap.add k u t.users;
-      emit_console_user_upsert t ~u >|= fun () -> u
-
 let strip_mirc_codes (s : string) =
   let len = String.length s in
   let b = Bytes.create len in
@@ -318,6 +309,15 @@ let emit_console_user_upsert (t : t) ~(u : User.t) : unit Lwt.t =
     ]
   in
   notify t ("CLIENT " ^ Yojson.Safe.to_string payload)
+
+let user_ensure_emit (t : t) (nick : string) : User.t Lwt.t =
+  let k = user_key_of_nick nick in
+  match SMap.find_opt k t.users with
+  | Some u -> Lwt.return u
+  | None ->
+      let u = User.make nick in
+      t.users <- SMap.add k u t.users;
+      emit_console_user_upsert t ~u >|= fun () -> u
 
 let upsert_realname (t : t) ~(nick:string) ~(realname:string) : unit Lwt.t =
   let u = user_ensure t nick in
