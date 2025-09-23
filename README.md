@@ -117,7 +117,7 @@ You can install from this repo via opam pin to pull the monorepo packages:
 ```sh
   opam pin add omni-irc git+https://github.com/jesse-greathouse/omni-irc.git#main -y 
   # or pin a tag once released: 
-  opam pin add omni-irc git+https://github.com/jesse-greathouse/omni-irc.git#v0.1.13 -y
+  opam pin add omni-irc git+https://github.com/jesse-greathouse/omni-irc.git#v0.1.14 -y
   # Then install the thin client (brings required libs): +opam install omni-irc-client
 ```
 
