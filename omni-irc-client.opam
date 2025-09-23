@@ -12,12 +12,14 @@ depends: [
   "dune" {>= "3.20"}
   "lwt"
   "yojson"
+  "omni-irc-sig"
   "omni-irc-conn"
   "omni-irc-engine"
   "omni-irc-io-tcp"
   "omni-irc-io-tls"
-  "omni-irc-ui"                             # always (UI intf + loopback lib)
-  "omni-irc-ui-notty" { os != "win32" }
+  "omni-irc-io-unixsock" {"os" != "win32"}
+  "omni-irc-ui"
+  "omni-irc-ui-notty" {"os" != "win32"}
   "odoc" {with-doc}
 ]
 build: [
@@ -36,3 +38,4 @@ build: [
 ]
 dev-repo: "git+https://github.com/jesse-greathouse/omni-irc.git"
 x-maintenance-intent: ["(latest)"]
+

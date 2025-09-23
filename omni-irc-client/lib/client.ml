@@ -184,6 +184,15 @@ let user_ensure t nick =
       t.users <- SMap.add k u t.users;
       u
 
+let user_ensure_emit (t : t) (nick : string) : User.t Lwt.t =
+  let k = user_key_of_nick nick in
+  match SMap.find_opt k t.users with
+  | Some u -> Lwt.return u
+  | None ->
+      let u = User.make nick in
+      t.users <- SMap.add k u t.users;
+      emit_console_user_upsert t ~u >|= fun () -> u
+
 let strip_mirc_codes (s : string) =
   let len = String.length s in
   let b = Bytes.create len in
@@ -287,6 +296,7 @@ let json_of_user (u : User.t) : Yojson.Safe.t =
   `Assoc [
     ("nick",      `String (s u.nick));
     ("real_name", (match so u.real_name with Some x -> `String x | None -> `Null));
+    ("realname",  (match so u.real_name with Some x -> `String x | None -> `Null));
     ("ident",     (match so u.ident     with Some x -> `String x | None -> `Null));
     ("host",      (match so u.host      with Some x -> `String x | None -> `Null));
     ("account",   (match so u.account   with Some x -> `String x | None -> `Null));
@@ -297,15 +307,16 @@ let json_of_user (u : User.t) : Yojson.Safe.t =
   ]
 
 let emit_console_user_upsert (t : t) ~(u : User.t) : unit Lwt.t =
+  let key = user_key_of_nick u.nick in
   let payload =
     `Assoc [
       ("type", `String "user");
       ("op",   `String "upsert");
       ("ts",   `Float (Unix.gettimeofday ()));
+      ("key",  `String key);
       ("user", json_of_user u)
     ]
   in
-  (* Intentionally using CLIENT prefix per requirement *)
   notify t ("CLIENT " ^ Yojson.Safe.to_string payload)
 
 let upsert_realname (t : t) ~(nick:string) ~(realname:string) : unit Lwt.t =
@@ -747,15 +758,18 @@ let create (c_mod : (module CONN)) (cfg : Conn.cfg)
             let p2 = (match params with _srv :: x :: _ -> String.uppercase_ascii x | x::[] -> String.uppercase_ascii x | _ -> "") in
             (match p2 with
               | "LS" ->
-                  let caps = match trailing with Some s -> " " ^ String.lowercase_ascii s ^ " " | None -> " " in
-                  (match t.opts.sasl_plain with
-                  | Some _ when String.contains caps 's' && String.contains caps 'a' ->
-                      (* naive contains; ok for " sasl " *)
-                      if String.exists (fun _ -> false) caps then Lwt.return_unit else start_sasl ()
-                  | Some _ ->
-                      (* no sasl support *)
-                      abort_if_required_sasl ()
-                  | None -> cap_end ())
+                let caps = match trailing with Some s -> " " ^ String.lowercase_ascii s ^ " " | None -> " " in
+                let supports_sasl =
+                  let needle = " sasl " in
+                  let rec find i =
+                    i + String.length needle <= String.length caps
+                    && (String.sub caps i (String.length needle) = needle || find (i+1))
+                  in find 0
+                in
+                (match t.opts.sasl_plain with
+                | Some _ when supports_sasl -> start_sasl ()
+                | Some _ -> abort_if_required_sasl ()
+                | None -> cap_end ())
               | "ACK" ->
                 (* Server acknowledged sasl *)
                 (match t.opts.sasl_plain with
@@ -1005,7 +1019,7 @@ let names_prepare (t : t) (channel : string) : unit Lwt.t =
   Lwt.return_unit
 
 let names_member (t : t) ~ch ~nick ~status : unit Lwt.t =
-  ignore (user_ensure t nick);  (* upsert authoritative user object *)
+  user_ensure_emit t nick >>= fun _ ->
   let user_key = user_key_of_nick nick in
   let kch = channel_key_of ch in
   let ch_obj = channel_ensure t ch in
@@ -1043,13 +1057,12 @@ let names_completed (t : t) (channel : string) : unit Lwt.t =
 (* end NAMES helpers *)
 
 let member_join (t : t) ~ch ~nick : unit Lwt.t =
-  ignore (user_ensure t nick);
+  user_ensure_emit t nick >>= fun _ ->
   let user_key = user_key_of_nick nick in
   let kch = channel_key_of ch in
   let ch_obj = channel_ensure t ch in
   let ch' = Channel.add_user ch_obj user_key in
   t.channels <- SMap.add kch ch' t.channels;
-  (* fast UI hint *)
   emit_channels_upsert t ~names:[ch]
 
 let member_part (t : t) ~ch ~nick ~reason:_ : unit Lwt.t =
@@ -1090,9 +1103,12 @@ let set_user t k u =
   t.users <- SMap.add k u t.users
 
 let whois_basic (t : t) ~nick ~user ~host ~realname =
-  let k = user_key_of_nick nick in
-  let u = user_ensure t nick in
-  let w = ensure_whois u in
+  let k  = user_key_of_nick nick in
+  let u  = user_ensure t nick in
+  u.ident     <- Some user;
+  u.host      <- Some host;
+  u.real_name <- realname;
+  let w  = ensure_whois u in
   let w' = { w with user=Some user; host=Some host; realname } in
   u.whois <- Some w';
   set_user t k u;
@@ -1119,6 +1135,7 @@ let whois_channels (t : t) ~nick ~channels =
 let whois_actual (t : t) ~nick ~actual_host =
   let k = user_key_of_nick nick in
   let u = user_ensure t nick in
+  u.host <- Some actual_host;
   let w = ensure_whois u in
   let w' = { w with actual_host = Some actual_host } in
   u.whois <- Some w';

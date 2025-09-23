@@ -1,7 +1,7 @@
 (lang dune 3.20)
 
 (name omni-irc)
-(version 0.1.13)
+(version 0.1.14)
 
 (generate_opam_files true)
 
@@ -98,3 +98,4 @@
   (omni-irc-io-unixsock  (and (<> os "win32")))
   omni-irc-ui
   (omni-irc-ui-notty     (and (<> os "win32")))))
+
