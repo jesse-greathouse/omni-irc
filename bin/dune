@@ -1,7 +1,7 @@
 ; POSIX wrapper
 (rule
  (targets omni)
- (enabled_if %{os_type} != "Win32")
+ (enabled_if (<> %{os_type} "Win32"))
  (deps %{exe:../omni-irc-client/bin/main_unix.exe})
  (action (bash "cp %{exe:../omni-irc-client/bin/main_unix.exe} %{targets} && chmod +x %{targets}"))
  (mode (promote (until-clean))))
@@ -14,5 +14,5 @@
  (action (copy %{exe:../omni-irc-client/bin/main_win32.exe} %{targets}))
  (mode (promote (until-clean))))
 
-(alias (name omni) (enabled_if %{os_type} = "Win32") (deps omni))
-(alias (name omni) (enabled_if %{os_type} != "Win32") (deps omni.exe))
+(alias (name omni) (enabled_if (<> %{os_type} "Win32")) (deps omni))
+(alias (name omni) (enabled_if (= %{os_type} "Win32")) (deps omni.exe))
