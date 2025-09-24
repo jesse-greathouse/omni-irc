@@ -4,7 +4,7 @@
  (public_name omni-irc-client)
  (package omni-irc-client)
  (modules main_unix)
- (enabled_if (<> %{os_type} "Win32"))
+ (enabled_if %{os_type} != "Win32")
  (libraries
   lwt.unix
   omni-irc-conn
@@ -23,7 +23,7 @@
  (public_name omni-irc-client)
  (package omni-irc-client)
  (modules main_win32)
- (enabled_if (= %{os_type} "Win32"))
+ (enabled_if %{os_type} = "Win32")
  (libraries
   lwt.unix
   omni-irc-conn
