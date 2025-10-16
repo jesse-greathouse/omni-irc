@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Omni IRC Client"
+    Manufacturer="Jesse Greathouse"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="{F2F1C1F7-9C43-43CE-9C82-2E9F4F5B7B9B}"
+    InstallerVersion="500"
+    Compressed="yes"
+    Scope="perMachine">
+
+    <!-- ARP (Apps & Features) -->
+    <Property Id="ARPCONTACT"      Value="Jesse Greathouse jesse.greathouse@gmail.com" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/jesse-greathouse/omni-irc" />
+    <Property Id="ARPHELPLINK"     Value="https://github.com/jesse-greathouse/omni-irc/issues" />
+
+    <!-- Single embedded CAB -->
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- x64 Program Files -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Omni IRC Client" />
+    </StandardDirectory>
+
+    <!-- Main feature -->
+    <Feature Id="MainFeature" Title="Omni IRC Client" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AppRegistry" />
+      <ComponentRef Id="UserRegistryCleanup" />
+    </Feature>
+
+    <!-- Machine-wide discovery keys (HKLM) -->
+    <Component Id="AppRegistry" Directory="INSTALLFOLDER" Guid="{5C7C5E63-4D31-4FC7-BB31-9E3D8247A9A0}">
+      <RegistryKey Root="HKLM" Key="Software\OmniIRC">
+        <RegistryValue Type="string" Name="InstallDir" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <RegistryValue Type="string" Name="ExePath"    Value="[INSTALLFOLDER]omni-irc-client.exe" />
+        <RegistryValue Type="string" Name="Version"    Value="$(var.ProductVersion)" />
+      </RegistryKey>
+      <RemoveRegistryKey Root="HKLM" Key="Software\OmniIRC" Action="removeOnUninstall" />
+    </Component>
+
+    <!-- Per-user cleanup (for uninstalling user) -->
+    <Component Id="UserRegistryCleanup" Directory="INSTALLFOLDER" Guid="{F6D0A3C1-3E5C-4F1B-9F69-7E7C4EAD2B55}">
+      <RegistryKey Root="HKCU" Key="Software\OmniIRC">
+        <RegistryValue Type="string" Name="_CleanupAnchor" Value="1" KeyPath="yes" />
+      </RegistryKey>
+      <RemoveRegistryKey Root="HKCU" Key="Software\OmniIRC" Action="removeOnUninstall" />
+    </Component>
+
+  </Package>
+</Wix>
