@@ -1,3 +1,7 @@
+## v0.1.16 (2025-10-16)
+
+- Release 0.1.16.
+
 ## v0.1.1 (2025-09-06)
 
 - Initial public multi-package release of Omni-IRC libraries.
@@ -42,3 +46,4 @@ _No user-facing protocol changes; this is a packaging/build reliability release.
 
 - **Removed cstruct dependency**
   - @hannesm pointed out [in this post](https://github.com/jesse-greathouse/omni-irc/issues/1) That the ocaml-tls library had not used cstruct since 1.0.0  (released August 2024)
+
