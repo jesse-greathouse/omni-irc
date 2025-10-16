@@ -98,3 +98,4 @@
   (omni-irc-io-unixsock  (and (<> os "win32")))
   omni-irc-ui
   (omni-irc-ui-notty     (and (<> os "win32")))))
+
