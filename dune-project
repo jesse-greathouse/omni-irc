@@ -99,3 +99,4 @@
   omni-irc-ui
   (omni-irc-ui-notty     (and (<> os "win32")))))
 
+
