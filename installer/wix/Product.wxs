@@ -10,12 +10,14 @@
     Scope="perMachine">
 
     <!-- ARP (Apps & Features) -->
-    <Property Id="ARPCONTACT"      Value="Jesse Greathouse jesse.greathouse@gmail.com" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/jesse-greathouse/omni-irc" />
-    <Property Id="ARPHELPLINK"     Value="https://github.com/jesse-greathouse/omni-irc/issues" />
+    <Property Id="ARPCONTACT"       Value="Jesse Greathouse jesse.greathouse@gmail.com" />
+    <Property Id="ARPURLINFOABOUT"  Value="https://github.com/jesse-greathouse/omni-irc" />
+    <Property Id="ARPHELPLINK"      Value="https://github.com/jesse-greathouse/omni-irc/issues" />
 
     <!-- Single embedded CAB -->
     <MediaTemplate EmbedCab="yes" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Omni IRC Client is already installed." />
 
     <!-- x64 Program Files -->
     <StandardDirectory Id="ProgramFiles64Folder">

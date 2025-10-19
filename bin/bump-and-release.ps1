@@ -21,12 +21,23 @@ function Require-CleanGit {
 function Update-DuneProjectVersion([string]$ver) {
   if (-not (Test-Path "dune-project")) { throw "dune-project not found." }
   $orig = Get-Content "dune-project" -Raw
-  $new  = $orig -replace '^\(version\s+([^)]+)\)', "(version $ver)"
+  # Enable multiline with (?m) so ^ anchors to line starts (not file start)
+  $new  = [Regex]::Replace($orig, '(?m)^\(version\s+([^)]+)\)', "(version $ver)")
   if ($orig -ne $new) {
     Set-Content "dune-project" $new -Encoding UTF8
   } else {
-    Write-Host "dune-project already at $ver (or version stanza not found)."
+    Write-Host "No '(version ...)' stanza updated; inserting (version $ver) under (name ...)."
+    # Insert after (name ...) if version stanza didn't exist or the regex missed it
+    $new = $orig -replace '(?m)^(\(name\s+[^\)]+\)\s*)', "`$1(version $ver)`n`n"
+    Set-Content "dune-project" $new -Encoding UTF8
   }
+}
+
+function Read-DuneProjectVersion {
+  $dp = Get-Content "dune-project" -Raw
+  $m = [Regex]::Match($dp, '(?m)^\(version\s+([^)]+)\)')
+  if (-not $m.Success) { throw "Unable to read version from dune-project after update." }
+  return $m.Groups[1].Value.Trim()
 }
 
 function Prepend-Changes([string]$ver) {
@@ -43,8 +54,7 @@ function Prepend-Changes([string]$ver) {
 }
 
 function Build-Artifacts([string]$ver) {
-  # Uses your existing packager (makes .zip + MSI)
-  powershell -ExecutionPolicy Bypass -File .\bin\package-win.ps1
+  powershell -ExecutionPolicy Bypass -File .\bin\package-win.ps1 -Version $ver
 
   $zip = ".dist\omni-irc-win64.zip"
   $msi = ".dist\omni-irc-client-$ver-windows-x64.msi"
@@ -78,6 +88,10 @@ Require-CleanGit
 
 Write-Host ">> Bumping to version $Version"
 Update-DuneProjectVersion $Version
+$dpVer = Read-DuneProjectVersion
+if ($dpVer -ne $Version) {
+  throw "Version mismatch: dune-project has '$dpVer' but requested '$Version'. Aborting."
+}
 Prepend-Changes $Version
 
 git add -A

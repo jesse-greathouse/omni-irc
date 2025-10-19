@@ -1,8 +1,10 @@
 .vscode/
 .dist/
+.DS_Store
 /dist-opam/
 /_build/
 /_opam/
+/installer/certificate
 *.install
 *.swp
 *.swo

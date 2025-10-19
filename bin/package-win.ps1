@@ -3,8 +3,23 @@ Param(
   [string]$BuildProfile = "release",
   [string]$MSYS2        = "C:\msys64",
   [string]$OutDir       = ".dist\omni-irc-win64",
-  [string]$ExeName      = "omni-irc-client.exe"
+  [string]$ExeName      = "omni-irc-client.exe",
+  [string]$Version      = ""
 )
+
+# decide version
+$version = $Version
+if (-not $version) {
+  $version = "0.0.0"
+  $dp = Join-Path $RepoRoot "dune-project"
+  if (Test-Path $dp) {
+    $verLine = (Get-Content $dp) | Select-String '^\(version\s+([^)]+)\)'
+    if ($verLine) { $version = ($verLine.Matches[0].Groups[1].Value.Trim()) }
+  }
+}
+if (-not $version -or $version -eq "0.0.0") {
+  throw "Cannot determine Version (pass -Version or ensure dune-project contains '(version ...)')."
+}
 
 $ErrorActionPreference = "Stop"
 
