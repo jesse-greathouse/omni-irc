@@ -8,7 +8,6 @@ BUILD_PROFILE="${BUILD_PROFILE:-release}"
 OUT_DIR="${OUT_DIR:-.dist/omni-irc-macos}"
 APP_NAME="${APP_NAME:-Omni IRC Client}"
 APP_BUNDLE="${APP_BUNDLE:-.dist/${APP_NAME}.app}"
-DMG_PATH="${DMG_PATH:-.dist/omni-irc-macos-arm64.dmg}"
 VERSION="${VERSION:-}"                 # optional; falls back to dune-project
 
 # Signing / notarization inputs
@@ -196,7 +195,6 @@ identity_exists_in_keychain() {
   security find-identity -p codesigning -v 2>/dev/null | grep -Fq "$ident"
 }
 
-# Map the EXACT identity (by SHA or quoted display) to its display string
 resolve_identity_display() {
   local ident="$1"
   security find-identity -p codesigning -v 2>/dev/null | \
@@ -216,7 +214,6 @@ classify_identity() {
   if [[ "$ident" == "-" || -z "$ident" ]]; then echo "ad-hoc"; return; fi
   local disp; disp="$(resolve_identity_display "$ident" || true)"
   if [[ -z "${disp:-}" ]]; then
-    # Unknown -> treat as self-signed (safe for behavior gating)
     echo "self-signed"; return
   fi
   case "$disp" in
@@ -249,7 +246,6 @@ ensure_signing_identity() {
     fi
   fi
 
-  # Create self-signed for local dev if nothing else is available
   local CN="${SIGN_IDENTITY:-$SELF_CN_DEFAULT}"
   log "No certificate artifacts found; creating self-signed identity (CN: $CN)"
   local SELF_KEY="$CERT_DIR/omni-self-signed.key" SELF_CRT="$CERT_DIR/omni-self-signed.crt" SELF_P12="$CERT_DIR/omni-self-signed.p12" CFG="$CERT_DIR/codesign-req.cnf"
@@ -331,14 +327,11 @@ codesign_app() {
     die "REQUIRE_DEV_ID=1 set but identity is not Developer ID Application."
   fi
 
-  # Build base codesign args
   local -a CS_BASE=(/usr/bin/codesign --force -s "$ident")
-  # Only add hardened runtime + timestamp for Dev ID Application
   if [[ "$kind" == "dev-id-app" ]]; then
     CS_BASE+=(--options runtime --timestamp)
   fi
 
-  # Entitlements
   local ad_hoc_tmp_ent=""
   mk_ad_hoc_entitlements_if_needed "$ident" ad_hoc_tmp_ent
   local ent_to_use=""
@@ -352,7 +345,6 @@ codesign_app() {
     CS_BASE+=("--entitlements" "$ent_to_use")
   fi
 
-  # Adaptive notarization: only with Developer ID Application
   if [[ "$kind" != "dev-id-app" && "${NOTARIZE:-0}" == "1" ]]; then
     log "Disabling notarization (requires Developer ID Application)."
     NOTARIZE=0
@@ -360,7 +352,6 @@ codesign_app() {
 
   xattr -rc "$app" 2>/dev/null || true
 
-  # Sign in order: dylibs -> exe -> app; never fail the build on these
   set +e
   if [[ -d "$fwdir" ]]; then
     find "$fwdir" -type f -name "*.dylib" -print0 | while IFS= read -r -d '' dylib; do
@@ -375,12 +366,10 @@ codesign_app() {
   log "Codesigning app bundle"
   "${CS_BASE[@]}" "$app" || log "WARN: codesign app bundle failed (continuing)"
 
-  # Verify (non-fatal)
   /usr/bin/codesign -v --deep --strict --verbose=2 "$app" >/dev/null 2>&1 || {
     log "codesign verify non-zero (dev is okay)"; /usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | sed 's/^/   /' || true
   }
 
-  # Cleanup synthesized entitlements
   [[ -n "$ad_hoc_tmp_ent" ]] && rm -f "$ad_hoc_tmp_ent"
 }
 
@@ -408,18 +397,15 @@ verify_build() {
   local app="$1"
   local exe="$app/Contents/MacOS/omni"
 
-  # Check there are no hard Homebrew paths left
   local otool_out=""
   otool_out="$(/usr/bin/otool -L "$exe" 2>/dev/null || true)"
   if printf '%s' "$otool_out" | /usr/bin/grep -Fq "/opt/homebrew"; then
     die "Leftover Homebrew references in binary!"
   fi
 
-  # Soft verification (never fail the build)
   /usr/bin/codesign -v --deep "$app" >/dev/null 2>&1 || \
     log "codesign -v --deep returned non-zero; continuing (dev build)."
 
-  # Single spctl check (non-fatal). Self-signed/Apple Development is usually rejected.
   /usr/sbin/spctl --assess --type execute --ignore-cache --no-cache "$app" >/dev/null 2>&1 || \
     log "spctl assess failed (expected for self-signed/Apple Development during dev); continuing."
 }
@@ -440,7 +426,11 @@ if [[ -z "$VERSION" ]]; then VERSION="$(read_version_from_dune)"; fi
 log "Version: $VERSION"
 
 ARCH="$(uname -m || echo unknown)"
-ZIP_PATH_DEFAULT=".dist/omni-irc-macos-${ARCH}.zip"
+
+# Include version + arch to mirror Windows naming
+DMG_PATH_DEFAULT=".dist/omni-irc-client-${VERSION}-macos-${ARCH}.dmg"
+ZIP_PATH_DEFAULT=".dist/omni-irc-client-${VERSION}-macos-${ARCH}.zip"
+DMG_PATH="${DMG_PATH:-$DMG_PATH_DEFAULT}"
 ZIP_PATH="${ZIP_PATH:-$ZIP_PATH_DEFAULT}"
 
 ensure_homebrew
@@ -450,7 +440,6 @@ ensure_switch
 ensure_dune_and_deps
 ensure_signing_identity
 
-# Enforce DevID only if requested
 if [[ "$REQUIRE_DEV_ID" == "1" ]]; then
   if [[ "$(classify_identity "$SIGN_IDENTITY")" != "dev-id-app" ]]; then
     die "REQUIRE_DEV_ID=1 set but no Developer ID Application certificate is available in the login keychain."
