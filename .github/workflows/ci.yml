@@ -6,16 +6,11 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
-      options: --user 0:0
+      options: --user 0:0   # root for apt + checkout
 
     defaults:
       run:
         shell: bash
-
-    env:
-      OPAMROOT: ${{ github.workspace }}/.opam-root
-      HOME: ${{ github.workspace }}
-      OCAML_COMPILER: ocaml-base-compiler.5.3.0
 
     steps:
       - uses: actions/checkout@v4
@@ -28,10 +23,11 @@ jobs:
             pkg-config libgmp-dev ca-certificates git curl build-essential
           rm -rf /var/lib/apt/lists/*
 
-      - name: Fix permissions for opam user
+      # If you want workspace owned by opam for writes, limit chown to workspace only
+      - name: Fix workspace ownership for opam user
         run: |
           set -euo pipefail
-          chown -R opam:opam "$GITHUB_WORKSPACE" /__w/_temp /github/home || true
+          chown -R opam:opam "$GITHUB_WORKSPACE" || true
 
       - name: Cache opam & dune
         uses: actions/cache@v4
@@ -43,40 +39,11 @@ jobs:
           restore-keys: |
             opam-${{ runner.os }}-
 
-      - name: Prepare dirs
-        run: |
-          set -euo pipefail
-          mkdir -p "$OPAMROOT" "$GITHUB_WORKSPACE/.cache/dune"
-
-      - name: Init opam root (idempotent)
-        run: |
-          set -euo pipefail
-          if [[ -d "$OPAMROOT" && ! -f "$OPAMROOT/config" ]]; then
-            rm -rf "$OPAMROOT"
-          fi
-          opam init --bare --no-setup --disable-sandboxing -y
-          opam repository set-url default https://opam.ocaml.org -y || true
-          opam --version
-
-      - name: Create/ensure local switch
-        run: |
-          set -euo pipefail
-          if ! opam switch show 2>/dev/null | grep -Fxq "$GITHUB_WORKSPACE"; then
-            opam switch create . "$OCAML_COMPILER" -y
-          fi
-          opam switch list
-
       - name: Install deps
-        run: |
-          set -euo pipefail
-          opam install . --deps-only -y --switch=.
+        run: su - opam -c 'opam install . --deps-only -y'
 
       - name: Build
-        run: |
-          set -euo pipefail
-          opam exec --switch=. -- dune build @install
+        run: su - opam -c 'opam exec -- dune build @install'
 
       - name: Lint
-        run: |
-          set -euo pipefail
-          opam exec --switch=. -- opam lint *.opam
+        run: su - opam -c 'opam exec -- opam lint *.opam'
