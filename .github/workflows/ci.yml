@@ -6,10 +6,13 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
-      # options: --user 0:0   # ❌ remove this
+      # options: --user 0:0  # ⟵ remove this
 
     steps:
       - uses: actions/checkout@v4
+
+      # ⟵ remove the chown step entirely
+
       - name: Cache opam
         uses: actions/cache@v4
         with:
