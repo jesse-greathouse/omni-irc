@@ -20,13 +20,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install APT prerequisites
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            pkg-config libgmp-dev ca-certificates git curl build-essential
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Fix permissions for opam user
+        run: |
+          set -euo pipefail
+          chown -R opam:opam "$GITHUB_WORKSPACE" /__w/_temp /github/home || true
+
       - name: Cache opam & dune
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.OPAMROOT }}
-            ${{ github.workspace }}/_opam
-            ${{ github.workspace }}/.cache/dune
+            /home/opam/.opam
+            /home/opam/.cache/dune
           key: opam-${{ runner.os }}-${{ hashFiles('**/*.opam', 'dune-project') }}
           restore-keys: |
             opam-${{ runner.os }}-
