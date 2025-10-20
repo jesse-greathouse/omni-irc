@@ -6,16 +6,10 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
-      options: --user 0:0   # run container as root so checkout can write to /__w/_temp
+      # options: --user 0:0   # ❌ remove this
+
     steps:
       - uses: actions/checkout@v4
-
-      # Make workspace and temp dirs writable by 'opam'
-      - name: Fix permissions for opam user
-        run: |
-          chown -R opam:opam "$GITHUB_WORKSPACE" /__w/_temp /github/home || true
-
-      # (Optional) cache opam/dune between runs
       - name: Cache opam
         uses: actions/cache@v4
         with:
@@ -27,10 +21,10 @@ jobs:
             opam-${{ runner.os }}-
 
       - name: Install deps
-        run: su - opam -c 'opam install . --deps-only -y'
+        run: opam install . --deps-only -y
 
       - name: Build
-        run: su - opam -c 'opam exec -- dune build @install'
+        run: opam exec -- dune build @install
 
       - name: Lint
-        run: su - opam -c 'opam exec -- opam lint *.opam'
+        run: opam exec -- opam lint *.opam
