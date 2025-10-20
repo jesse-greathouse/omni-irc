@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
-      options: --user 0:0   # root for apt + checkout
+      options: --user 0:0
 
     defaults:
       run:
@@ -23,7 +23,6 @@ jobs:
             pkg-config libgmp-dev ca-certificates git curl build-essential
           rm -rf /var/lib/apt/lists/*
 
-      # If you want workspace owned by opam for writes, limit chown to workspace only
       - name: Fix workspace ownership for opam user
         run: |
           set -euo pipefail
@@ -38,6 +37,17 @@ jobs:
           key: opam-${{ runner.os }}-${{ hashFiles('**/*.opam', 'dune-project') }}
           restore-keys: |
             opam-${{ runner.os }}-
+      
+      - name: Ensure switch & dune
+        run: |
+          su - opam -c '
+            set -e
+            opam update -y
+            # Ensure a usable switch (the opam image usually has one, but this is safe)
+            opam switch show >/dev/null 2>&1 || opam switch create default ocaml-base-compiler.5.3.0 -y
+            # Make sure dune (the build tool) is installed
+            opam install -y dune
+          '
 
       - name: Install deps
         run: su - opam -c 'opam install . --deps-only -y'
