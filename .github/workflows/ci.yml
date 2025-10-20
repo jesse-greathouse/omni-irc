@@ -6,14 +6,15 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
-      # Match the hosted runner uid:gid so checkout/file-commands can write /__w/_temp/*
       options: --user 1001:121
 
+    defaults:
+      run:
+        shell: bash
+
     env:
-      # Put opam root and caches inside the workspace (writable by 1001)
       OPAMROOT: ${{ github.workspace }}/.opam-root
       HOME: ${{ github.workspace }}
-      # Pin the compiler we want for the local switch
       OCAML_COMPILER: ocaml-base-compiler.5.3.0
 
     steps:
@@ -24,7 +25,7 @@ jobs:
         with:
           path: |
             ${{ env.OPAMROOT }}
-            ${{ github.workspace }}/_opam              # local switch (created below)
+            ${{ github.workspace }}/_opam
             ${{ github.workspace }}/.cache/dune
           key: opam-${{ runner.os }}-${{ hashFiles('**/*.opam', 'dune-project') }}
           restore-keys: |
@@ -32,26 +33,22 @@ jobs:
 
       - name: Prepare dirs
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           mkdir -p "$OPAMROOT" "$GITHUB_WORKSPACE/.cache/dune"
 
       - name: Init opam root (idempotent)
         run: |
-          set -euxo pipefail
-          # If cache restored a non-root directory, nuke and re-init
-          if [ -d "$OPAMROOT" ] && [ ! -f "$OPAMROOT/config" ]; then
+          set -euo pipefail
+          if [[ -d "$OPAMROOT" && ! -f "$OPAMROOT/config" ]]; then
             rm -rf "$OPAMROOT"
           fi
-          # Initialize the custom root (no shell setup; disable sandboxing in CI)
           opam init --bare --no-setup --disable-sandboxing -y
-          # Ensure default repo URL is set (harmless if already correct)
           opam repository set-url default https://opam.ocaml.org -y || true
           opam --version
 
       - name: Create/ensure local switch
         run: |
-          set -euxo pipefail
-          # Create a local switch in the repo dir if absent
+          set -euo pipefail
           if ! opam switch show 2>/dev/null | grep -Fxq "$GITHUB_WORKSPACE"; then
             opam switch create . "$OCAML_COMPILER" -y
           fi
@@ -59,15 +56,15 @@ jobs:
 
       - name: Install deps
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           opam install . --deps-only -y --switch=.
 
       - name: Build
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           opam exec --switch=. -- dune build @install
 
       - name: Lint
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           opam exec --switch=. -- opam lint *.opam
