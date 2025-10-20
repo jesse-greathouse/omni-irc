@@ -3,8 +3,6 @@
 (name omni-irc)
 (version 0.1.18)
 
-(version 0.1.18)
-
 (generate_opam_files true)
 
 (implicit_transitive_deps true)
@@ -100,4 +98,3 @@
   (omni-irc-io-unixsock  (and (<> os "win32")))
   omni-irc-ui
   (omni-irc-ui-notty     (and (<> os "win32")))))
-

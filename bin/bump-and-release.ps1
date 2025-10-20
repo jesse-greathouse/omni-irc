@@ -18,36 +18,6 @@ function Get-RepoRoot {
   return (Split-Path -Parent $PSScriptRoot)
 }
 
-function Update-DuneProjectVersion([string]$ver) {
-  if (-not (Test-Path "dune-project")) { throw "dune-project not found." }
-  $orig = Get-Content "dune-project" -Raw
-
-  # Try to replace existing (version ...) first (multiline)
-  $new  = [Regex]::Replace($orig, '(?m)^\(version\s+([^)]+)\)', "(version $ver)")
-
-  if ($orig -ne $new) {
-    Set-Content "dune-project" $new -Encoding UTF8
-    return $true
-  }
-
-  # If there was no (version ...) stanza, insert after (name ...)
-  $ins = $orig -replace '(?m)^(\(name\s+[^\)]+\)\s*)', "`$1(version $ver)`r`n`r`n"
-  if ($ins -ne $orig) {
-    Set-Content "dune-project" $ins -Encoding UTF8
-    return $true
-  }
-
-  Write-Host "No '(version ...)' stanza found and no '(name ...)' anchor to insert under; leaving dune-project unchanged."
-  return $false
-}
-
-function Read-DuneProjectVersion {
-  $dp = Get-Content "dune-project" -Raw
-  $m = [Regex]::Match($dp, '(?m)^\(version\s+([^)]+)\)')
-  if (-not $m.Success) { throw "Unable to read version from dune-project after update." }
-  return $m.Groups[1].Value.Trim()
-}
-
 function Ensure-GitHubCLI {
   if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     throw "GitHub CLI (gh) not found. Install from https://cli.github.com/ and authenticate with `gh auth login`."
@@ -67,25 +37,20 @@ Set-Location $repoRoot
 
 Ensure-GitHubCLI
 
-# 1) Bump version in dune-project (if needed)
-Write-Host ">> Bumping to version $Version"
-$changed = Update-DuneProjectVersion $Version
-$dpVer   = Read-DuneProjectVersion
-if ($dpVer -ne $Version) { throw "Version mismatch: dune-project has '$dpVer' but requested '$Version'." }
+# 1) (No source edits) — build artifacts for the provided Version
+Write-Host ">> Building artifacts for v$Version"
+$pkg = Join-Path $repoRoot "bin\package-win.ps1"
+& $pkg `
+  -Switch $Switch `
+  -BuildProfile $BuildProfile `
+  -MSYS2 $MSYS2 `
+  -Version $Version
 
-# 2) Commit (only if dune-project changed)
-if ($changed) {
-  git add dune-project
-  git commit -m "Release v$Version" | Out-Null
-} else {
-  Write-Host "No dune-project changes to commit."
-}
-
-# 3) Tag & push
+# 2) Tag & push (idempotent)
 $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
 if (-not $branch) { $branch = "main" }
 
-# Create/replace annotated tag (idempotent re-runs)
+# Create/replace annotated tag
 & git rev-parse -q --verify "refs/tags/v$Version" *> $null
 $tagExists = ($LASTEXITCODE -eq 0)
 
@@ -95,20 +60,11 @@ if ($tagExists) {
 }
 git tag -a "v$Version" -m "v$Version"
 
+# No code changes were made; pushing branch is harmless but can be skipped if desired
 git push origin $branch
 git push --force origin "v$Version"
 
-# 4) Build artifacts (ZIP/MSI, etc.)
-Write-Host ">> Building artifacts for v$Version"
-$pkg = Join-Path $repoRoot "bin\package-win.ps1"
-& $pkg `
-  -Switch $Switch `
-  -BuildProfile $BuildProfile `
-  -MSYS2 $MSYS2 `
-  -Version $Version
-
-# 5) Collect ALL artifacts in .dist that match: omni-irc-client-{Version}-{Platform}-{Arch}.{ext}
-#    Pattern: ^omni-irc-client-<version>-<anything>-<anything>\.<anything>$
+# 3) Collect ALL .dist artifacts that match: omni-irc-client-{Version}-{Platform}-{Arch}.{ext}
 $distDir = Join-Path $repoRoot ".dist"
 if (-not (Test-Path $distDir)) {
   throw "Missing artifacts directory: $distDir"
@@ -132,7 +88,7 @@ if ($assets.Count -eq 0) {
 Write-Host ">> Attaching the following artifact(s):"
 $assets | ForEach-Object { Write-Host "   - $_" }
 
-# 6) Create or update GitHub release
+# 4) Create or update GitHub release
 $tag   = "v$Version"
 $notes = "Release $tag"
 
