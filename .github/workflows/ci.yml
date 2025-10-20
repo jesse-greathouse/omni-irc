@@ -6,22 +6,29 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ocaml/opam:debian-12-ocaml-5.3
-      # options: --user 0:0  # ⟵ remove this
+      options: --user 1001:121
+
+    env:
+      OPAMROOT: ${{ github.workspace }}/.opam-root
+      HOME: ${{ github.workspace }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # ⟵ remove the chown step entirely
-
-      - name: Cache opam
+      - name: Cache opam & dune
         uses: actions/cache@v4
         with:
           path: |
-            /home/opam/.opam
-            /home/opam/.cache/dune
+            ${{ env.OPAMROOT }}
+            ${{ github.workspace }}/.cache/dune
           key: opam-${{ runner.os }}-${{ hashFiles('**/*.opam', 'dune-project') }}
           restore-keys: |
             opam-${{ runner.os }}-
+
+      - name: Init local cache dirs
+        run: |
+          mkdir -p "$OPAMROOT"
+          mkdir -p "$GITHUB_WORKSPACE/.cache/dune"
 
       - name: Install deps
         run: opam install . --deps-only -y
