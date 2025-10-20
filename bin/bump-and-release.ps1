@@ -71,8 +71,9 @@ if (-not (Test-Path $distDir)) {
 }
 
 # Build regex using the exact Version, anchor to start/end, accept any non-empty platform/arch and any extension
+# Only match: dmg, zip, msi, gz, tar, rpm, deb
 $verEsc = [Regex]::Escape($Version)
-$artifactPattern = "^(?i:omni-irc-client)-$verEsc-[^-]+-[^.]+\..+$"
+$artifactPattern = "(?i)^omni-irc-client-$verEsc-[^-]+-[^.]+\.(?:dmg|zip|msi|gz|tar|rpm|deb)$"
 
 $assets = @()
 Get-ChildItem -Path $distDir -File | ForEach-Object {
