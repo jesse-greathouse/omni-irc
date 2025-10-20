@@ -5,21 +5,24 @@ Param(
   [string]$OutDir       = ".dist\omni-irc-win64",
   [string]$ExeName      = "omni-irc-client.exe",
 
-  # Allow caller to force the version used for ZIP/MSI naming and WiX define
-  [string]$Version      = $null
+  # Version for naming and WiX define
+  [string]$Version      = $null,
+
+  # Naming controls
+  [string]$Platform     = "win64",   # keep "win64" per your scheme
+  [string]$Arch         = $null      # auto-detect if not provided
 )
 
 $ErrorActionPreference = "Stop"
 
-# ---------- Path helpers (anchor to repo root) ----------
+# ---------- Path helpers ----------
 $RepoRoot = (Split-Path -Parent $PSScriptRoot)
-
 function Resolve-AbsPath([string]$p) {
   if ([System.IO.Path]::IsPathRooted($p)) { return (Resolve-Path $p).Path }
   return (Join-Path $RepoRoot $p)
 }
 
-# Decide version early (param -> dune-project)
+# ---------- Version ----------
 $version = $Version
 if (-not $version) {
   $version = "0.0.0"
@@ -33,11 +36,39 @@ if (-not $version -or $version -eq "0.0.0") {
   throw "Cannot determine Version (pass -Version or ensure dune-project contains '(version ...)')."
 }
 
+# ---------- Robust arch resolution ----------
+function Resolve-Arch([string]$a) {
+  if ($a) { return $a.ToLower() }
+  $cands = @($env:PROCESSOR_ARCHITECTURE, $env:PROCESSOR_ARCHITEW6432) | Where-Object { $_ -and $_.Trim() -ne "" }
+  foreach ($c in $cands) {
+    switch ($c.ToUpperInvariant()) {
+      "ARM64" { return "arm64" }
+      "AMD64" { return "x64"   }
+      "X86"   { return "x86"   }
+      "IA64"  { return "ia64"  }
+    }
+  }
+  try {
+    $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()
+    if ($osArch -match 'arm64') { return 'arm64' }
+    if ($osArch -match 'x64')   { return 'x64'   }
+    if ($osArch -match 'x86')   { return 'x86'   }
+  } catch {}
+  return "x64"
+}
+$Arch = Resolve-Arch $Arch
+
+# Map to WiX arch token (WiX v4 accepts x64/arm64)
+$WixArch = if ($Arch -eq 'arm64') { 'arm64' } elseif ($Arch -eq 'x86') { 'x86' } else { 'x64' }
+
+# ---------- Paths ----------
 $OutDirAbs     = Resolve-AbsPath $OutDir
-$ZipAbs        = Resolve-AbsPath (".dist\omni-irc-win64-{0}.zip" -f $version)  # versioned ZIP
 $WixOutDirAbs  = Resolve-AbsPath ".dist\wix"
 $FilesWxsAbs   = Join-Path $WixOutDirAbs "Files.wxs"
 $ProductWxsAbs = Resolve-AbsPath "installer\wix\Product.wxs"
+
+# Versioned, platform + arch ZIP name
+$ZipAbs        = Resolve-AbsPath (".dist\omni-irc-client-{0}-{1}-{2}.zip" -f $version, $Platform, $Arch)
 
 # ---------- WiX resolver ----------
 function Resolve-WixExe {
@@ -51,7 +82,6 @@ function Resolve-WixExe {
   if ($env:WIX) { $candidates += (Join-Path $env:WIX "bin\wix.exe") }
   foreach ($p in $candidates) { if (Test-Path $p) { return $p } }
 
-  # Try to make dotnet tool path visible if installed
   $dotnetToolDir = Join-Path $env:USERPROFILE ".dotnet\tools"
   if (Test-Path (Join-Path $dotnetToolDir "wix.exe")) {
     $global:env:Path = "$dotnetToolDir;$($global:env:Path)"
@@ -61,41 +91,35 @@ function Resolve-WixExe {
   return $null
 }
 
-# ---------- Generate WiX fragment from a folder (preserves subfolders) ----------
+# ---------- Generate WiX fragment ----------
 function New-WixFilesFragment {
   param(
-    [Parameter(Mandatory)][string]$InstallDir,  # absolute on disk (source)
-    [Parameter(Mandatory)][string]$OutPath      # absolute Files.wxs path
+    [Parameter(Mandatory)][string]$InstallDir,
+    [Parameter(Mandatory)][string]$OutPath
   )
   if (-not (Test-Path $InstallDir)) { throw "InstallDir '$InstallDir' does not exist." }
-
   $rootFull = (Resolve-Path $InstallDir).Path
 
-  # Build directory tree from relative paths
-  $dirsSet    = [System.Collections.Generic.HashSet[string]]::new()
+  $dirsSet = [System.Collections.Generic.HashSet[string]]::new()
   $dirsSet.Add("") | Out-Null
   $files = Get-ChildItem -Path $InstallDir -Recurse -File | Where-Object { $_.Name -notmatch '\.pdb$' }
 
   foreach ($f in $files) {
-    $rel = $f.FullName.Substring($rootFull.Length).TrimStart('\','/')
+    $rel    = $f.FullName.Substring($rootFull.Length).TrimStart('\','/')
     $relDir = Split-Path $rel -Parent
     if ($relDir -and $relDir -ne ".") {
       $parts = $relDir -split '[\\\/]+'
       for ($i=0; $i -lt $parts.Length; $i++) {
-        $seg = ($parts[0..$i] -join '\')
-        $dirsSet.Add($seg) | Out-Null
+        $seg = ($parts[0..$i] -join '\'); $dirsSet.Add($seg) | Out-Null
       }
     }
   }
 
   $dirsOrdered = $dirsSet | Sort-Object { ($_ -split '[\\\/]+').Length }, { $_ }
-
-  $dirId = @{}
-  $dirId[""] = "INSTALLFOLDER"
+  $dirId = @{}; $dirId[""] = "INSTALLFOLDER"
   foreach ($d in $dirsOrdered) {
     if ($d -eq "") { continue }
-    $safe = "DIR_" + ($d -replace '[^A-Za-z0-9_]', '_')
-    $dirId[$d] = $safe
+    $dirId[$d] = "DIR_" + ($d -replace '[^A-Za-z0-9_]', '_')
   }
 
   $sb = New-Object System.Text.StringBuilder
@@ -105,23 +129,20 @@ function New-WixFilesFragment {
   [void]$sb.AppendLine('    <DirectoryRef Id="INSTALLFOLDER">')
   foreach ($d in $dirsOrdered) {
     if ($d -eq "") { continue }
-    $parent = Split-Path $d -Parent
-    if ($parent -eq ".") { $parent = "" }
-    $parentId = $dirId[$parent]
-    $thisId   = $dirId[$d]
-    $name     = Split-Path $d -Leaf
+    $parent   = Split-Path $d -Parent; if ($parent -eq ".") { $parent = "" }
+    $parentId = $dirId[$parent]; $thisId = $dirId[$d]; $name = Split-Path $d -Leaf
     [void]$sb.AppendLine("      <Directory Id=""$thisId"" Name=""$name"" Parent=""$parentId"" />")
   }
   [void]$sb.AppendLine('    </DirectoryRef>')
   [void]$sb.AppendLine('    <ComponentGroup Id="AppFiles">')
   foreach ($f in $files) {
-    $rel = $f.FullName.Substring($rootFull.Length).TrimStart('\','/')
-    $relDir = Split-Path $rel -Parent
-    $dirKey = if ($relDir -and $relDir -ne ".") { $relDir -replace '/', '\' } else { "" }
-    $targetDirId = $dirId[$dirKey]
-    $cid  = 'CMP_' + ($rel -replace '[^A-Za-z0-9_]', '_')
-    $src  = '$(var.InstallDir)\' + ($rel -replace '/', '\')
-    [void]$sb.AppendLine("      <Component Id=""$cid"" Directory=""$targetDirId"" Guid=""*"">")
+    $rel     = $f.FullName.Substring($rootFull.Length).TrimStart('\','/')
+    $relDir  = Split-Path $rel -Parent
+    $dirKey  = if ($relDir -and $relDir -ne ".") { $relDir -replace '/', '\' } else { "" }
+    $target  = $dirId[$dirKey]
+    $cid     = 'CMP_' + ($rel -replace '[^A-Za-z0-9_]', '_')
+    $src     = '$(var.InstallDir)\' + ($rel -replace '/', '\')
+    [void]$sb.AppendLine("      <Component Id=""$cid"" Directory=""$target"" Guid=""*"">")
     [void]$sb.AppendLine("        <File Source=""$src"" KeyPath=""yes"" />")
     [void]$sb.AppendLine("      </Component>")
   }
@@ -183,7 +204,7 @@ try {
   Copy-Item (Join-Path $RepoRoot "README*")  $OutDirAbs -ErrorAction SilentlyContinue
   Copy-Item (Join-Path $RepoRoot "LICENSE*") $OutDirAbs -ErrorAction SilentlyContinue
 
-  # Zip (versioned filename)
+  # Zip (versioned filename with platform+arch)
   $zipDirAbs = Split-Path $ZipAbs -Parent
   if (-not (Test-Path $zipDirAbs)) { New-Item -ItemType Directory -Force $zipDirAbs | Out-Null }
   if (Test-Path $ZipAbs) { Remove-Item $ZipAbs -Force }
@@ -215,13 +236,14 @@ Skipping MSI build.
     throw "Missing WiX authoring at $ProductWxsAbs (expected checked-in file)."
   }
 
-  $msiAbs = Resolve-AbsPath (".dist\omni-irc-client-{0}-windows-x64.msi" -f $version)
+  $msiAbs = Resolve-AbsPath (".dist\omni-irc-client-{0}-{1}-{2}.msi" -f $version, $Platform, $Arch)
   Write-Host ">> Building MSI -> $msiAbs"
+
   & $wixExe build `
       $ProductWxsAbs `
       $FilesWxsAbs `
       -o $msiAbs `
-      -arch x64 `
+      -arch $Arch `
       -d ProductVersion=$version `
       -d InstallDir=$OutDirAbs |
       Write-Host

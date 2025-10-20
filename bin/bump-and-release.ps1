@@ -98,7 +98,7 @@ git tag -a "v$Version" -m "v$Version"
 git push origin $branch
 git push --force origin "v$Version"
 
-# 4) Build artifacts (ZIP + MSI)
+# 4) Build artifacts (ZIP/MSI, etc.)
 Write-Host ">> Building artifacts for v$Version"
 $pkg = Join-Path $repoRoot "bin\package-win.ps1"
 & $pkg `
@@ -107,18 +107,30 @@ $pkg = Join-Path $repoRoot "bin\package-win.ps1"
   -MSYS2 $MSYS2 `
   -Version $Version
 
-# 5) Collect artifacts (note: ZIP now includes version in filename)
-$zip = Join-Path $repoRoot (".dist\omni-irc-win64-{0}.zip" -f $Version)
-$msi = Join-Path $repoRoot (".dist\omni-irc-client-{0}-windows-x64.msi" -f $Version)
-
-if (-not (Test-Path $zip)) { throw "Missing artifact: $zip (packager should have created it)" }
-
-$assets = @($zip)
-if (Test-Path $msi) {
-  $assets += $msi
-} else {
-  Write-Warning "MSI not found at $msi. Will publish release with ZIP only."
+# 5) Collect ALL artifacts in .dist that match: omni-irc-client-{Version}-{Platform}-{Arch}.{ext}
+#    Pattern: ^omni-irc-client-<version>-<anything>-<anything>\.<anything>$
+$distDir = Join-Path $repoRoot ".dist"
+if (-not (Test-Path $distDir)) {
+  throw "Missing artifacts directory: $distDir"
 }
+
+# Build regex using the exact Version, anchor to start/end, accept any non-empty platform/arch and any extension
+$verEsc = [Regex]::Escape($Version)
+$artifactPattern = "^(?i:omni-irc-client)-$verEsc-[^-]+-[^.]+\..+$"
+
+$assets = @()
+Get-ChildItem -Path $distDir -File | ForEach-Object {
+  if ($_.Name -match $artifactPattern) {
+    $assets += $_.FullName
+  }
+}
+
+if ($assets.Count -eq 0) {
+  throw "No artifacts matched pattern '$artifactPattern' in $distDir"
+}
+
+Write-Host ">> Attaching the following artifact(s):"
+$assets | ForEach-Object { Write-Host "   - $_" }
 
 # 6) Create or update GitHub release
 $tag   = "v$Version"

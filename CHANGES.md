@@ -1,3 +1,21 @@
+# Changelog
+
+## v0.1.18 (2025-10-19)
+
+
+- Version bump: set project version to **0.1.18** in `dune-project`.
+- **Consistent artifact naming** across platforms:
+  - Windows ZIP/MSI: `omni-irc-client-<ver>-win64-<arch>.(zip|msi)` (e.g., `omni-irc-client-0.1.18-win64-x64.zip`)
+  - macOS ZIP/DMG: `omni-irc-client-<ver>-macos-<arch>.(zip|dmg)` (e.g., `omni-irc-client-0.1.18-macos-arm64.dmg`)
+- **Release automation** now auto-discovers and attaches all `.dist/` artifacts matching:  
+  `^omni-irc-client-<version>-<platform>-<arch>\..+$`
+- **Robust arch detection** on Windows (`x64`/`arm64`) and proper WiX `-arch` wiring; MSI filenames now include the correct arch token.
+- **Tagging safety**: if `v<ver>` already exists, delete/recreate the annotated tag before pushing; push tag with `--force` (tag only).
+- **Tooling resilience**:
+  - Verify presence of `gh` and help surface WiX installed via `dotnet tool` by adjusting `PATH`.
+  - Windows packager accepts `-Version` override and falls back to the version in `dune-project`.
+
+
 ## v0.1.16 (2025-10-16)
 
 - Release 0.1.16.
@@ -46,4 +64,3 @@ _No user-facing protocol changes; this is a packaging/build reliability release.
 
 - **Removed cstruct dependency**
   - @hannesm pointed out [in this post](https://github.com/jesse-greathouse/omni-irc/issues/1) That the ocaml-tls library had not used cstruct since 1.0.0  (released August 2024)
-
