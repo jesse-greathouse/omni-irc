@@ -1,29 +1,141 @@
 Param(
-  [string]$Switch       = "omni-irc-dev",
-  [string]$BuildProfile = "release",
-  [string]$MSYS2        = "C:\msys64",
-  [string]$OutDir       = ".dist\omni-irc-win64",
-  [string]$ExeName      = "omni-irc-client.exe",
-
-  # Version for naming and WiX define
+  # CLI overrides (highest precedence after --config)
+  [string]$Switch       = $null,
+  [string]$BuildProfile = $null,
+  [string]$MSYS2        = $null,
+  [string]$OutDir       = $null,
+  [string]$ExeName      = $null,
   [string]$Version      = $null,
-
-  # Naming controls
-  [string]$Platform     = "win64",   # keep "win64" per your scheme
-  [string]$Arch         = $null      # auto-detect if not provided
+  [string]$Platform     = $null,
+  [string]$Arch         = $null,
+  [string]$Config       = $null,
+  [switch]$PrintConfig
 )
 
 $ErrorActionPreference = "Stop"
 
-# ---------- Path helpers ----------
-$RepoRoot = (Split-Path -Parent $PSScriptRoot)
+# ───────────────────────── repo + config files ─────────────────────────
+$RepoRoot   = (Split-Path -Parent $PSScriptRoot)
+$ConfigDir  = Join-Path $RepoRoot "installer"
+$ConfigDist = Join-Path $ConfigDir "build.dist.ini"
+$ConfigLocal= Join-Path $ConfigDir "build.ini"
+
 function Resolve-AbsPath([string]$p) {
+  if ([string]::IsNullOrWhiteSpace($p)) { return $null }
   if ([System.IO.Path]::IsPathRooted($p)) { return (Resolve-Path $p).Path }
   return (Join-Path $RepoRoot $p)
 }
 
-# ---------- Version ----------
-$version = $Version
+# ───────────────────────── allowed config keys ─────────────────────────
+# Keep this list explicit; only these keys load from INI/ENV.
+$AllowedKeys = @(
+  # build
+  'SWITCH','BUILD_PROFILE','MSYS2','OUT_DIR','EXE_NAME','VERSION','PLATFORM','ARCH',
+  # wix/output
+  'WIX_EXE','ZIP_PATH','MSI_PATH',
+  # signing (optional)
+  'WIN_SIGN','WIN_CERT_SUBJECT','WIN_CERT_PFX','WIN_CERT_PFX_PASS','WIN_TIMESTAMP_URL'
+)
+
+# hard defaults (minimal; most defaults live in build.dist.ini)
+$cfg = [ordered]@{
+  SWITCH            = 'omni-irc-dev'
+  BUILD_PROFILE     = 'release'
+  MSYS2             = 'C:\msys64'
+  OUT_DIR           = '.dist\omni-irc-win64'
+  EXE_NAME          = 'omni-irc-client.exe'
+  VERSION           = ''
+  PLATFORM          = 'win64'
+  ARCH              = ''              # auto-detect later
+  WIX_EXE           = ''              # auto-resolve later if empty
+  ZIP_PATH          = ''              # auto-name later if empty
+  MSI_PATH          = ''              # auto-name later if empty
+
+  # signing (off by default)
+  WIN_SIGN          = '0'
+  WIN_CERT_SUBJECT  = ''              # e.g. "Jesse Greathouse"
+  WIN_CERT_PFX      = ''              # e.g. C:\path\code-signing.pfx
+  WIN_CERT_PFX_PASS = ''              # secret (redacted in print)
+  WIN_TIMESTAMP_URL = 'http://timestamp.digicert.com'
+}
+
+# ───────────────────────── INI loader (safe) ───────────────────────────
+function Load-IniAllowed([string]$path, [hashtable]$into) {
+  if (-not (Test-Path $path)) { return }
+  Get-Content -Raw -LiteralPath $path -Encoding UTF8 `
+  | Select-String -Pattern '^\s*([^#;].*?)$' -AllMatches `
+  | ForEach-Object { $_.Matches.Value } `
+  | Where-Object { $_ -match '^\s*[A-Z0-9_]+\s*=' } `
+  | ForEach-Object {
+      $line = $_.Trim()
+      $eq   = $line.IndexOf('=')
+      if ($eq -gt 0) {
+        $k = $line.Substring(0,$eq).Trim()
+        $v = $line.Substring($eq+1).Trim()
+        if ($AllowedKeys -contains $k) {
+          $into[$k] = $v
+        }
+      }
+    }
+}
+
+# precedence: dist -> local -> --config -> ENV -> CLI args
+Load-IniAllowed $ConfigDist $cfg
+Load-IniAllowed $ConfigLocal $cfg
+if ($Config) { Load-IniAllowed (Resolve-AbsPath $Config) $cfg }
+
+# ENV snapshot
+foreach ($k in $AllowedKeys) {
+  $envVal = [Environment]::GetEnvironmentVariable($k, "Process")
+  if ($envVal) { $cfg[$k] = $envVal }
+}
+
+# CLI overrides
+if ($Switch)       { $cfg.SWITCH       = $Switch }
+if ($BuildProfile) { $cfg.BUILD_PROFILE= $BuildProfile }
+if ($MSYS2)        { $cfg.MSYS2        = $MSYS2 }
+if ($OutDir)       { $cfg.OUT_DIR      = $OutDir }
+if ($ExeName)      { $cfg.EXE_NAME     = $ExeName }
+if ($Version)      { $cfg.VERSION      = $Version }
+if ($Platform)     { $cfg.PLATFORM     = $Platform }
+if ($Arch)         { $cfg.ARCH         = $Arch }
+
+function Print-EffectiveConfig {
+  Write-Host "---- effective config ----"
+  foreach ($k in $AllowedKeys) {
+    $v = $cfg[$k]
+    if ($k -eq 'WIN_CERT_PFX_PASS') { $v = '****' }
+    "{0,-20} = {1}" -f $k, ($v ?? '')
+  }
+  Write-Host "--------------------------"
+}
+
+if ($PrintConfig) { Print-EffectiveConfig; exit 0 }
+
+# ───────────────────────── arch + version resolve ───────────────────────
+function Resolve-Arch([string]$a) {
+  if ($a) { return $a.ToLowerInvariant() }
+  $cands = @($env:PROCESSOR_ARCHITECTURE, $env:PROCESSOR_ARCHITEW6432) | Where-Object { $_ -and $_.Trim() -ne "" }
+  foreach ($c in $cands) {
+    switch ($c.ToUpperInvariant()) {
+      'ARM64' { return 'arm64' }
+      'AMD64' { return 'x64'   }
+      'X86'   { return 'x86'   }
+    }
+  }
+  try {
+    $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()
+    if ($osArch -match 'arm64') { return 'arm64' }
+    if ($osArch -match 'x64')   { return 'x64' }
+    if ($osArch -match 'x86')   { return 'x86' }
+  } catch {}
+  'x64'
+}
+$Arch = Resolve-Arch $cfg.ARCH
+$cfg.ARCH = $Arch
+$WixArch = if ($Arch -eq 'arm64') { 'arm64' } elseif ($Arch -eq 'x86') { 'x86' } else { 'x64' }
+
+$version = $cfg.VERSION
 if (-not $version) {
   $version = "0.0.0"
   $dp = Join-Path $RepoRoot "dune-project"
@@ -33,45 +145,67 @@ if (-not $version) {
   }
 }
 if (-not $version -or $version -eq "0.0.0") {
-  throw "Cannot determine Version (pass -Version or ensure dune-project contains '(version ...)')."
+  throw "Cannot determine Version (set VERSION or ensure dune-project contains '(version ...)')."
 }
+$cfg.VERSION = $version
 
-# ---------- Robust arch resolution ----------
-function Resolve-Arch([string]$a) {
-  if ($a) { return $a.ToLower() }
-  $cands = @($env:PROCESSOR_ARCHITECTURE, $env:PROCESSOR_ARCHITEW6432) | Where-Object { $_ -and $_.Trim() -ne "" }
-  foreach ($c in $cands) {
-    switch ($c.ToUpperInvariant()) {
-      "ARM64" { return "arm64" }
-      "AMD64" { return "x64"   }
-      "X86"   { return "x86"   }
-      "IA64"  { return "ia64"  }
-    }
-  }
-  try {
-    $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()
-    if ($osArch -match 'arm64') { return 'arm64' }
-    if ($osArch -match 'x64')   { return 'x64'   }
-    if ($osArch -match 'x86')   { return 'x86'   }
-  } catch {}
-  return "x64"
-}
-$Arch = Resolve-Arch $Arch
-
-# Map to WiX arch token (WiX v4 accepts x64/arm64)
-$WixArch = if ($Arch -eq 'arm64') { 'arm64' } elseif ($Arch -eq 'x86') { 'x86' } else { 'x64' }
-
-# ---------- Paths ----------
-$OutDirAbs     = Resolve-AbsPath $OutDir
+# ───────────────────────── path setup ───────────────────────────────────
+$OutDirAbs     = Resolve-AbsPath $cfg.OUT_DIR
 $WixOutDirAbs  = Resolve-AbsPath ".dist\wix"
 $FilesWxsAbs   = Join-Path $WixOutDirAbs "Files.wxs"
 $ProductWxsAbs = Resolve-AbsPath "installer\wix\Product.wxs"
 
-# Versioned, platform + arch ZIP name
-$ZipAbs        = Resolve-AbsPath (".dist\omni-irc-client-{0}-{1}-{2}.zip" -f $version, $Platform, $Arch)
+if ([string]::IsNullOrEmpty($cfg.ZIP_PATH)) {
+  $cfg.ZIP_PATH = ".dist\omni-irc-client-$version-$($cfg.PLATFORM)-$Arch.zip"
+}
+if ([string]::IsNullOrEmpty($cfg.MSI_PATH)) {
+  $cfg.MSI_PATH = ".dist\omni-irc-client-$version-$($cfg.PLATFORM)-$Arch.msi"
+}
+$ZipAbs = Resolve-AbsPath $cfg.ZIP_PATH
+$MsiAbs = Resolve-AbsPath $cfg.MSI_PATH
 
-# ---------- WiX resolver ----------
+# ───────────────────────── signtool helpers ─────────────────────────────
+function Resolve-SignTool {
+  $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Path }
+  $candidates = @(
+    "$env:ProgramFiles (x86)\Windows Kits\10\bin\x64\signtool.exe",
+    "$env:ProgramFiles\Windows Kits\10\bin\x64\signtool.exe",
+    "$env:ProgramFiles (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe",
+    "$env:ProgramFiles (x86)\Windows Kits\10\bin\10.0.19041.0\x64\signtool.exe"
+  )
+  foreach ($p in $candidates) { if (Test-Path $p) { return $p } }
+  return $null
+}
+
+function Sign-File([string]$path) {
+  if ($cfg.WIN_SIGN -ne '1') { return }
+  $signtool = Resolve-SignTool
+  if (-not $signtool) { throw "WIN_SIGN=1 but signtool.exe not found. Install Windows SDK." }
+
+  $ts = $cfg.WIN_TIMESTAMP_URL
+  $args = @('sign','/fd','sha256','/tr', $ts, '/td','sha256')
+
+  if ($cfg.WIN_CERT_PFX) {
+    $pfx = Resolve-AbsPath $cfg.WIN_CERT_PFX
+    if (-not (Test-Path $pfx)) { throw "PFX not found at $pfx" }
+    $args += @('/f', $pfx)
+    if ($cfg.WIN_CERT_PFX_PASS) { $args += @('/p', $cfg.WIN_CERT_PFX_PASS) }
+  } elseif ($cfg.WIN_CERT_SUBJECT) {
+    $args += @('/n', $cfg.WIN_CERT_SUBJECT)
+  } else {
+    throw "WIN_SIGN=1 but neither WIN_CERT_PFX nor WIN_CERT_SUBJECT is set."
+  }
+
+  & $signtool @args $path | Write-Host
+}
+
+# ───────────────────────── WiX resolver ─────────────────────────────────
 function Resolve-WixExe {
+  if ($cfg.WIX_EXE) {
+    $p = Resolve-AbsPath $cfg.WIX_EXE
+    if (Test-Path $p) { return $p }
+  }
   $cmd = Get-Command wix -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Path }
   $candidates = @(
@@ -79,19 +213,18 @@ function Resolve-WixExe {
     "C:\Program Files\WiX Toolset v4\bin\wix.exe",
     "C:\Program Files (x86)\WiX Toolset v4\bin\wix.exe"
   )
-  if ($env:WIX) { $candidates += (Join-Path $env:WIX "bin\wix.exe") }
   foreach ($p in $candidates) { if (Test-Path $p) { return $p } }
-
+  # try PATH after dotnet tools hint
   $dotnetToolDir = Join-Path $env:USERPROFILE ".dotnet\tools"
   if (Test-Path (Join-Path $dotnetToolDir "wix.exe")) {
-    $global:env:Path = "$dotnetToolDir;$($global:env:Path)"
+    $env:Path = "$dotnetToolDir;$env:Path"
     $cmd = Get-Command wix -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Path }
   }
   return $null
 }
 
-# ---------- Generate WiX fragment ----------
+# ───────────────────────── WiX files fragment ───────────────────────────
 function New-WixFilesFragment {
   param(
     [Parameter(Mandatory)][string]$InstallDir,
@@ -155,9 +288,9 @@ function New-WixFilesFragment {
   [System.IO.File]::WriteAllText($OutPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 }
 
-# ---------- Build portable payload ----------
-Write-Host ">> Activating opam switch: $Switch"
-(& opam env --switch=$Switch --set-switch) -split '\r?\n' | ForEach-Object { Invoke-Expression $_ }
+# ───────────────────────── Build portable payload ───────────────────────
+Write-Host ">> Activating opam switch: $($cfg.SWITCH)"
+(& opam env --switch=$($cfg.SWITCH) --set-switch) -split '\r?\n' | ForEach-Object { Invoke-Expression $_ }
 
 Write-Host ">> Building dune + deps"
 $oldPath = $env:Path
@@ -175,19 +308,19 @@ try {
   if (-not $dune) { throw "dune was not found in $switchBin even after PATH prepend." }
   Write-Host ">> dune resolved: $dune"
 
-  Write-Host ">> Building ($BuildProfile)"
-  & $dune build --profile $BuildProfile bin/omni.exe
+  Write-Host ">> Building ($($cfg.BUILD_PROFILE))"
+  & $dune build --profile $cfg.BUILD_PROFILE bin/omni.exe
 
   $built = Join-Path $RepoRoot "_build\default\bin\omni.exe"
   if (-not (Test-Path $built)) { throw "Expected exe not found at $built" }
 
-  Write-Host ">> Staging output -> $OutDirAbs"
+  Write-Host ">> Staging output -> $(Resolve-AbsPath $cfg.OUT_DIR)"
   Remove-Item -Recurse -Force $OutDirAbs -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $OutDirAbs | Out-Null
-  Copy-Item $built (Join-Path $OutDirAbs $ExeName)
+  Copy-Item $built (Join-Path $OutDirAbs $cfg.EXE_NAME)
 
   # Dependency harvest via ntldd (MSYS2 UCRT64)
-  $ntldd = Join-Path $MSYS2 "ucrt64\bin\ntldd.exe"
+  $ntldd = Join-Path $cfg.MSYS2 "ucrt64\bin\ntldd.exe"
   if (Test-Path $ntldd) {
     Write-Host ">> Harvesting DLLs via ntldd"
     $deps = & $ntldd -R $built |
@@ -204,14 +337,20 @@ try {
   Copy-Item (Join-Path $RepoRoot "README*")  $OutDirAbs -ErrorAction SilentlyContinue
   Copy-Item (Join-Path $RepoRoot "LICENSE*") $OutDirAbs -ErrorAction SilentlyContinue
 
+  # Sign EXE + harvested DLLs (optional)
+  if ($cfg.WIN_SIGN -eq '1') {
+    Write-Host ">> Code signing enabled; signing staged binaries"
+    $targets = Get-ChildItem -Path $OutDirAbs -File -Include *.exe,*.dll -Recurse
+    foreach ($t in $targets) { Sign-File $t.FullName }
+  }
+
   # Zip (versioned filename with platform+arch)
   $zipDirAbs = Split-Path $ZipAbs -Parent
   if (-not (Test-Path $zipDirAbs)) { New-Item -ItemType Directory -Force $zipDirAbs | Out-Null }
   if (Test-Path $ZipAbs) { Remove-Item $ZipAbs -Force }
   Compress-Archive -Path (Join-Path $OutDirAbs '*') -DestinationPath $ZipAbs
-
   Write-Host ">> ZIP created: $ZipAbs"
-  Write-Host "   Unzip and run: $OutDirAbs\$ExeName"
+  Write-Host "   Unzip and run: $OutDirAbs\$($cfg.EXE_NAME)"
 
   # ---------- MSI build ----------
   $wixExe = Resolve-WixExe
@@ -236,19 +375,22 @@ Skipping MSI build.
     throw "Missing WiX authoring at $ProductWxsAbs (expected checked-in file)."
   }
 
-  $msiAbs = Resolve-AbsPath (".dist\omni-irc-client-{0}-{1}-{2}.msi" -f $version, $Platform, $Arch)
-  Write-Host ">> Building MSI -> $msiAbs"
-
+  Write-Host ">> Building MSI -> $MsiAbs"
   & $wixExe build `
       $ProductWxsAbs `
       $FilesWxsAbs `
-      -o $msiAbs `
-      -arch $Arch `
+      -o $MsiAbs `
+      -arch $WixArch `
       -d ProductVersion=$version `
-      -d InstallDir=$OutDirAbs |
-      Write-Host
+      -d InstallDir=$OutDirAbs | Write-Host
 
-  Write-Host ">> MSI created: $msiAbs"
+  # Sign MSI (optional)
+  if ($cfg.WIN_SIGN -eq '1') {
+    Write-Host ">> Signing MSI"
+    Sign-File $MsiAbs
+  }
+
+  Write-Host ">> MSI created: $MsiAbs"
 }
 finally {
   $env:Path = $oldPath

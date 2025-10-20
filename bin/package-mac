@@ -1,48 +1,106 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ================== Config / Inputs ==================
-SWITCH="${SWITCH:-omni-irc-dev}"
-OCAML_COMP="${OCAML_COMP:-ocaml-base-compiler}"
-BUILD_PROFILE="${BUILD_PROFILE:-release}"
-OUT_DIR="${OUT_DIR:-.dist/omni-irc-macos}"
-APP_NAME="${APP_NAME:-Omni IRC Client}"
-APP_BUNDLE="${APP_BUNDLE:-.dist/${APP_NAME}.app}"
-VERSION="${VERSION:-}"                 # optional; falls back to dune-project
-
-# Signing / notarization inputs
-SIGN_IDENTITY="${SIGN_IDENTITY:-}"     # Fingerprint or display name; "-" for ad-hoc
-ENTITLEMENTS="${ENTITLEMENTS:-}"       # Optional entitlements file
-NOTARIZE="${NOTARIZE:-}"               # "1" to notarize (ignored unless Dev ID Application)
-APPLE_ID="${APPLE_ID:-}"
-TEAM_ID="${TEAM_ID:-}"
-APP_SPEC_PASS="${APP_SPEC_PASS:-}"
-REQUIRE_DEV_ID="${REQUIRE_DEV_ID:-0}"  # "1" to refuse ad-hoc/self-signed
-ALLOW_X86_UNIVERSAL="${ALLOW_X86_UNIVERSAL:-}"  # "1" to skip arm64 assert
-
-# Certificate directory / import options
-CERT_DIR_REL="installer/certificate"
-CERT_DIR=""
-CERT_P12_PASS="${CERT_P12_PASS:-omni}"
-SELF_CN_DEFAULT="Omni IRC Local Dev (SELF)"
-
+# ────────────────────────── repo + config files ──────────────────────────
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_DIR="${REPO_ROOT}/installer"
+CONFIG_DIST="${CONFIG_DIR}/build.dist.ini"   # checked in, safe defaults
+CONFIG_LOCAL="${CONFIG_DIR}/build.ini"       # .gitignored, local secrets
+
+# optional flags
+PRINT_CONFIG=0
+USER_CONFIG=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --print-config) PRINT_CONFIG=1; shift ;;
+    --config)       USER_CONFIG="${2:-}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+# ─────────────────────────── allowed config keys ─────────────────────────
+# keep this list small + explicit; only these can be set via INI
+CONFIG_KEYS=(
+  SWITCH OCAML_COMP BUILD_PROFILE OUT_DIR APP_NAME APP_BUNDLE VERSION
+  SIGN_IDENTITY ENTITLEMENTS NOTARIZE NOTARY_PROFILE APPLE_ID TEAM_ID APP_SPEC_PASS
+  REQUIRE_DEV_ID ALLOW_X86_UNIVERSAL CERT_P12_PASS DMG_PATH ZIP_PATH CERT_DIR_REL
+)
+
+# ───────────────────────────── config loader ─────────────────────────────
+# hard minimal defaults (anything “opinionated” belongs in build.dist.ini)
+: "${SWITCH:=omni-irc-dev}"
+: "${OCAML_COMP:=ocaml-base-compiler}"
+: "${BUILD_PROFILE:=release}"
+: "${OUT_DIR:=.dist/omni-irc-macos}"
+: "${APP_NAME:=Omni IRC Client}"
+: "${APP_BUNDLE:=.dist/${APP_NAME}.app}"
+: "${CERT_DIR_REL:=installer/certificate}"
+: "${CERT_P12_PASS:=omni}"
+: "${REQUIRE_DEV_ID:=0}"
+: "${ALLOW_X86_UNIVERSAL:=}"
+: "${NOTARIZE:=}"
+: "${NOTARY_PROFILE:=}"
+: "${APPLE_ID:=}"
+: "${TEAM_ID:=}"
+: "${APP_SPEC_PASS:=}"
+: "${VERSION:=}" # default to reading from dune-project later
+: "${DMG_PATH:=}"
+: "${ZIP_PATH:=}"
+
+# snapshot env so it wins last after we source INIs
+ENV_SNAPSHOT="$(mktemp)"
+/usr/bin/printenv | /usr/bin/grep -E '^('"$(IFS='|'; echo "${CONFIG_KEYS[*]}")"')=' > "$ENV_SNAPSHOT" || true
+
+_load_ini() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  local tmp; tmp="$(mktemp)"
+  /usr/bin/grep -Ev '^\s*(#|;|$)' "$file" | \
+  /usr/bin/grep -E '^[A-Z_][A-Z0-9_]*=' | \
+  /usr/bin/awk -v ok="$(IFS=' '; echo "${CONFIG_KEYS[*]}")" -F= '
+    BEGIN { n=split(ok, allow, " "); for (i=1;i<=n;i++) wl[allow[i]]=1; }
+    { if ($1 in wl) print "export " $0; }' > "$tmp"
+  # shellcheck disable=SC1090
+  source "$tmp"
+  rm -f "$tmp"
+}
+
+# precedence: dist → local → user-specified config → original env snapshot
+_load_ini "$CONFIG_DIST"
+_load_ini "$CONFIG_LOCAL"
+if [[ -n "$USER_CONFIG" ]]; then _load_ini "$USER_CONFIG"; fi
+while IFS= read -r line; do [[ -n "$line" ]] && export "$line"; done < "$ENV_SNAPSHOT"
+rm -f "$ENV_SNAPSHOT"
+
+# ─────────────────────────── convenience helpers ─────────────────────────
+die() { echo "error: $*" >&2; exit 1; }
+log() { echo ">> $*" >&2; }
 
 # Prefer Homebrew OpenSSL 3 if present
 OPENSSL="${OPENSSL:-openssl}"
 if command -v /opt/homebrew/opt/openssl@3/bin/openssl >/dev/null 2>&1; then
   OPENSSL="/opt/homebrew/opt/openssl@3/bin/openssl"
 fi
-
-# ================== Helpers ==================
-die() { echo "error: $*" >&2; exit 1; }
-log() { echo ">> $*" >&2; }
 log "Using OpenSSL at: $(command -v "$OPENSSL" || echo "$OPENSSL")"
+
+_print_effective_config() {
+  echo "---- effective config ----"
+  for k in "${CONFIG_KEYS[@]}"; do
+    v="${!k-}"
+    # redact sensitive
+    case "$k" in
+      APP_SPEC_PASS) v="****";;
+    esac
+    printf "%-18s = %s\n" "$k" "${v:-}"
+  done
+  echo "--------------------------"
+}
 
 arm64_assert() {
   local machine translated
   machine="$(uname -m || true)"
-  translated="$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)"
+  translated="$(/usr/sbin/sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)"
   if [[ "${ALLOW_X86_UNIVERSAL:-}" == "1" ]]; then
     log "Skipping arm64 assert (ALLOW_X86_UNIVERSAL=1)"; return
   fi
@@ -52,20 +110,16 @@ arm64_assert() {
 }
 
 mk_ad_hoc_entitlements_if_needed() {
-  local ident="$1" out_var="$2"
-  local tmp_ent=""
+  local ident="$1" out_var="$2" tmp_ent=""
   if [[ "$ident" == "-" ]]; then
     if [[ -z "${ENTITLEMENTS:-}" || ! -f "$ENTITLEMENTS" ]]; then
       tmp_ent="$(mktemp)"
       cat >"$tmp_ent" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-  <dict>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-  </dict>
-</plist>
+<plist version="1.0"><dict>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict></plist>
 PLIST
     fi
   fi
@@ -81,42 +135,20 @@ read_version_from_dune() {
   echo "$v"
 }
 
-ensure_homebrew() {
-  command -v brew >/dev/null 2>&1 && return
-  log "Homebrew not found. Attempting to install..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
-    die "Homebrew install failed. Install Homebrew manually from https://brew.sh and re-run."
-  }
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-}
-
-ensure_opam() {
-  command -v opam >/dev/null 2>&1 && return
-  log "opam not found. Installing via Homebrew..."
-  brew install opam || die "Failed to install opam via Homebrew."
-}
-
-opam_initialized() { opam var root >/dev/null 2>&1; }
-ensure_opam_init() {
-  opam_initialized && return
-  log "Initializing opam (first-run)..."
-  opam init -y --disable-sandboxing --bare || die "opam init failed"
-}
-
-switch_exists() { opam switch list -s | grep -Fxq "$SWITCH"; }
-ensure_switch() {
+ensure_homebrew() { command -v brew >/dev/null 2>&1 || die "Homebrew not found. Install https://brew.sh and re-run."; }
+ensure_opam()     { command -v opam >/dev/null 2>&1 || { log "Installing opam via Homebrew..."; brew install opam || die "opam install failed"; }; }
+opam_initialized(){ opam var root >/dev/null 2>&1; }
+ensure_opam_init(){ opam_initialized || { log "Initializing opam (first-run)..."; opam init -y --disable-sandboxing --bare || die "opam init failed"; }; }
+switch_exists()   { opam switch list -s | grep -Fxq "$SWITCH"; }
+ensure_switch()   {
   log "Activating opam switch: $SWITCH"
-  if ! switch_exists; then
-    log "Creating switch '$SWITCH' with $OCAML_COMP ..."
-    opam switch create "$SWITCH" "$OCAML_COMP" -y || die "Failed creating opam switch"
-  fi
+  if ! switch_exists; then log "Creating switch '$SWITCH' ($OCAML_COMP)"; opam switch create "$SWITCH" "$OCAML_COMP" -y || die "switch create failed"; fi
+  # shellcheck disable=SC2046
   eval "$(opam env --switch="$SWITCH" --set-switch)"
 }
-
 ensure_dune_and_deps() {
-  command -v dune >/dev/null 2>&1 || { log "Installing dune..."; opam install -y dune || die "Failed to install dune"; }
-  log "Ensuring project deps..."
-  opam install -y . --deps-only || die "Failed to install project dependencies"
+  command -v dune >/dev/null 2>&1 || { log "Installing dune..."; opam install -y dune || die "dune install failed"; }
+  log "Ensuring project deps..."; opam install -y . --deps-only || die "opam deps failed"
 }
 
 build_binary() {
@@ -189,74 +221,64 @@ SH
   chmod +x "$app/Contents/MacOS/omni"
 }
 
-# ---------- Identity helpers ----------
-identity_exists_in_keychain() {
-  local ident="$1"
-  security find-identity -p codesigning -v 2>/dev/null | grep -Fq "$ident"
-}
-
+# ─────────────────────── signing identity helpers ────────────────────────
+identity_exists_in_keychain() { security find-identity -p codesigning -v 2>/dev/null | grep -Fq "$1"; }
 resolve_identity_display() {
   local ident="$1"
   security find-identity -p codesigning -v 2>/dev/null | \
   awk -v want="$ident" '
-    /^[[:space:]]*[0-9]+\)/ {
-      sha=$2
-      n=split($0,a,"\"")
-      disp=(n>=2?a[2]:"")
+    /^[[:space:]]*[0-9]+\)/ { sha=$2; n=split($0,a,"\""); disp=(n>=2?a[2]:"");
       if (want==sha) {print disp; exit}
-      if (index(disp,want)>0) {print disp; exit}
-    }'
+      if (index(disp,want)>0) {print disp; exit} }'
 }
-
-# dev-id-app | apple-dev | self-signed | ad-hoc
-classify_identity() {
-  local ident="$1"
-  if [[ "$ident" == "-" || -z "$ident" ]]; then echo "ad-hoc"; return; fi
-  local disp; disp="$(resolve_identity_display "$ident" || true)"
-  if [[ -z "${disp:-}" ]]; then
-    echo "self-signed"; return
+pick_identity_from_keychain() {
+  local out="" list
+  list="$(security find-identity -p codesigning -v 2>/dev/null || true)"
+  if [[ -n "${TEAM_ID:-}" ]]; then
+    out="$(echo "$list" | awk -v t="(${TEAM_ID})" -F\" '/Developer ID Application: / && $0 ~ t {print $2; exit}')"
+    [[ -n "$out" ]] || out="$(echo "$list" | awk -v t="(${TEAM_ID})" -F\" '/Apple Development: / && $0 ~ t {print $2; exit}')"
   fi
+  [[ -n "$out" ]] || out="$(echo "$list" | awk -F\" '/Developer ID Application: / {print $2; exit}')"
+  [[ -n "$out" ]] || out="$(echo "$list" | awk -F\" '/Apple Development: / {print $2; exit}')"
+  [[ -n "$out" ]] && echo "$out" || true
+}
+classify_identity() {
+  local disp
+  [[ -z "${1:-}" || "$1" == "-" ]] && { echo "ad-hoc"; return; }
+  disp="$(resolve_identity_display "$1" || true)"
+  [[ -z "$disp" ]] && { echo "self-signed"; return; }
   case "$disp" in
     Developer\ ID\ Application:*) echo "dev-id-app" ;;
     Apple\ Development:*)         echo "apple-dev"  ;;
     *)                            echo "self-signed" ;;
   esac
 }
-
-ensure_signing_identity() {
-  CERT_DIR="${REPO_ROOT}/${CERT_DIR_REL}"
+import_certs_from_dir() {
+  local CERT_DIR="${REPO_ROOT}/${CERT_DIR_REL}"
   mkdir -p "$CERT_DIR"
   local KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
-
-  if [[ -n "${SIGN_IDENTITY:-}" && "${SIGN_IDENTITY}" != "-" ]] && identity_exists_in_keychain "$SIGN_IDENTITY"; then
-    log "Using existing identity from keychain: $SIGN_IDENTITY"
-    return 0
-  fi
-
-  local p12; p12="$(ls "$CERT_DIR"/omni-*.p12 2>/dev/null | head -n1 || true)"
-  if [[ -n "${p12:-}" ]]; then
-    log "Importing P12: $p12"
-    security import "$p12" -k "$KEYCHAIN" -P "${CERT_P12_PASS:-}" -T /usr/bin/codesign >/dev/null 2>&1 || true
-    local disp; disp="$(resolve_identity_display "Developer ID Application:" || true)"
-    if [[ -z "$disp" ]]; then disp="$(resolve_identity_display "Apple Development:" || true)"; fi
-    if [[ -n "$disp" ]]; then
-      SIGN_IDENTITY="$disp"
-      log "Using identity from keychain: $SIGN_IDENTITY"
-      return 0
-    fi
-  fi
-
-  local CN="${SIGN_IDENTITY:-$SELF_CN_DEFAULT}"
-  log "No certificate artifacts found; creating self-signed identity (CN: $CN)"
-  local SELF_KEY="$CERT_DIR/omni-self-signed.key" SELF_CRT="$CERT_DIR/omni-self-signed.crt" SELF_P12="$CERT_DIR/omni-self-signed.p12" CFG="$CERT_DIR/codesign-req.cnf"
+  local did_any=0
+  for p12 in "$CERT_DIR"/*.p12; do [[ -e "$p12" ]] || continue; did_any=1; log "Importing P12: $p12"; security import "$p12" -k "$KEYCHAIN" -P "${CERT_P12_PASS:-}" -T /usr/bin/codesign >/dev/null 2>&1 || true; done
+  for c in "$CERT_DIR"/*.cer "$CERT_DIR"/*.crt; do [[ -e "$c" ]] || continue; did_any=1; log "Importing CER/CRT: $c"; security import "$c" -k "$KEYCHAIN" -T /usr/bin/codesign >/dev/null 2>&1 || true; done
+  [[ $did_any -eq 1 ]] && log "Finished certificate import (Keychain: login)."
+}
+ensure_self_signed_identity_if_needed() {
+  local disp; disp="$(pick_identity_from_keychain || true)"
+  if [[ -n "$disp" ]]; then SIGN_IDENTITY="$disp"; log "Using identity from keychain: $SIGN_IDENTITY"; return; fi
+  local CN="${SIGN_IDENTITY:-Omni IRC Local Dev (SELF)}"
+  log "No Apple identity found; creating self-signed (CN: $CN)"
+  local CERT_DIR="${REPO_ROOT}/${CERT_DIR_REL}"
+  mkdir -p "$CERT_DIR"
+  local SELF_KEY="$CERT_DIR/omni-self-signed.key" SELF_CRT="$CERT_DIR/omni-self-signed.crt" SELF_P12="$CERT_DIR/omni-self-signed.p12"
+  local CFG="$CERT_DIR/codesign-req.cnf"
   cat > "$CFG" <<EOF
-[ req ]
+[ req ]            ; minimal self-signed for local dev
 distinguished_name = dn
 prompt = no
 x509_extensions = codesign
-[ dn ]
+[ dn ]             ; subject
 CN = ${CN}
-[ codesign ]
+[ codesign ]       ; EKU for code signing
 basicConstraints=CA:false
 keyUsage=digitalSignature
 extendedKeyUsage=codeSigning
@@ -266,172 +288,102 @@ EOF
   "$OPENSSL" ecparam -genkey -name prime256v1 -noout -out "$SELF_KEY"
   "$OPENSSL" req -x509 -new -nodes -sha256 -key "$SELF_KEY" -days 3650 -config "$CFG" -extensions codesign -out "$SELF_CRT"
   "$OPENSSL" pkcs12 -export -inkey "$SELF_KEY" -in "$SELF_CRT" -out "$SELF_P12" -name "$CN" -passout pass:"$CERT_P12_PASS"
+  local KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
   security import "$SELF_P12" -k "$KEYCHAIN" -P "${CERT_P12_PASS:-}" -T /usr/bin/codesign >/dev/null 2>&1 || true
-
-  local disp; disp="$(resolve_identity_display "$CN" || true)"
-  if [[ -n "${disp:-}" ]]; then
-    SIGN_IDENTITY="$disp"
-    log "Using (self-signed) identity from keychain: $SIGN_IDENTITY"
-  else
-    SIGN_IDENTITY="-"
-    log "Could not import self-signed identity; will fall back to ad-hoc signing."
+  disp="$(resolve_identity_display "$CN" || true)"
+  if [[ -n "$disp" ]]; then SIGN_IDENTITY="$disp"; log "Using (self-signed): $SIGN_IDENTITY"; else SIGN_IDENTITY="-"; log "Falling back to ad-hoc."; fi
+}
+ensure_signing_identity() {
+  if [[ -n "${SIGN_IDENTITY:-}" && "${SIGN_IDENTITY}" != "-" ]] && identity_exists_in_keychain "$SIGN_IDENTITY"; then
+    log "Using existing identity (explicit): $SIGN_IDENTITY"; return
   fi
+  import_certs_from_dir
+  local disp; disp="$(pick_identity_from_keychain || true)"
+  if [[ -n "$disp" ]]; then SIGN_IDENTITY="$disp"; log "Using identity from keychain: $SIGN_IDENTITY"; return; fi
+  ensure_self_signed_identity_if_needed
 }
 
-# ---------- Bundle Homebrew dylibs and fix load paths ----------
+# ───────────────── bundle homebrew dylibs + fix load paths ───────────────
 bundle_vendor_libs() {
-  local app="$1"
-  local exe="$app/Contents/MacOS/omni"
-  local fwdir="$app/Contents/Frameworks"
-
-  mkdir -p "$fwdir"
-  ( cd "$app/Contents" && { [[ -e F ]] || ln -s Frameworks F; } )
-
-  while IFS= read -r lib; do
-    [[ -z "$lib" ]] && continue
-    [[ "$lib" == /usr/lib/* ]] && continue
-    if [[ "$lib" == /opt/homebrew/opt/*/lib/*.dylib || "$lib" == /opt/homebrew/Cellar/*/*/lib/*.dylib ]]; then
-      local base dst short_ref
-      base="$(basename "$lib")"
-      dst="$fwdir/$base"
-      cp -f "$lib" "$dst"
-      /usr/bin/install_name_tool -id "@loader_path/$base" "$dst" || true
-      short_ref="@loader_path/../F/$base"
-      /usr/bin/install_name_tool -change "$lib" "$short_ref" "$exe" 2>/dev/null || \
-      /usr/bin/install_name_tool -change "$lib" "@loader_path/../Frameworks/$base" "$exe"
-    fi
-  done < <(otool -L "$exe" | awk '/^\t\//{print $1}')
-
-  log "Post-fix otool -L (omni):"
-  otool -L "$exe" | sed 's/^/   /'
+  local app="$1" exe="$app/Contents/MacOS/omni" fwdir="$app/Contents/Frameworks"
+  mkdir -p "$fwdir"; ( cd "$app/Contents" && { [[ -e F ]] || ln -s Frameworks F; } )
+  /usr/bin/otool -L "$exe" | awk '/^\t\//{print $1}' | while IFS= read -r lib; do
+    [[ -z "$lib" || "$lib" == /usr/lib/* ]] && continue
+    case "$lib" in
+      /opt/homebrew/opt/*/lib/*.dylib|/opt/homebrew/Cellar/*/*/lib/*.dylib)
+        local base dst short_ref
+        base="$(basename "$lib")"; dst="$fwdir/$base"
+        cp -f "$lib" "$dst"
+        /usr/bin/install_name_tool -id "@loader_path/$base" "$dst" || true
+        short_ref="@loader_path/../F/$base"
+        /usr/bin/install_name_tool -change "$lib" "$short_ref" "$exe" 2>/dev/null || \
+        /usr/bin/install_name_tool -change "$lib" "@loader_path/../Frameworks/$base" "$exe"
+      ;;
+    esac
+  done
+  log "Post-fix otool -L (omni):"; /usr/bin/otool -L "$exe" | sed 's/^/   /'
 }
 
 codesign_app() {
-  local app="$1" ident="$2"
-  local exe="$app/Contents/MacOS/omni"
-  local fwdir="$app/Contents/Frameworks"
-
-  if [[ -z "${ident:-}" ]]; then
-    log "No SIGN_IDENTITY specified; skipping codesign."
-    return 0
-  fi
-  if [[ "$ident" != "-" ]] && ! identity_exists_in_keychain "$ident"; then
-    log "SIGN_IDENTITY '$ident' not found in keychain; falling back to ad-hoc signing."
-    ident="-"
-  fi
-
-  local kind; kind="$(classify_identity "$ident")"
-  log "Identity kind: $kind"
-
-  if [[ "$REQUIRE_DEV_ID" == "1" && "$kind" != "dev-id-app" ]]; then
-    die "REQUIRE_DEV_ID=1 set but identity is not Developer ID Application."
-  fi
-
-  local -a CS_BASE=(/usr/bin/codesign --force -s "$ident")
-  if [[ "$kind" == "dev-id-app" ]]; then
-    CS_BASE+=(--options runtime --timestamp)
-  fi
-
-  local ad_hoc_tmp_ent=""
-  mk_ad_hoc_entitlements_if_needed "$ident" ad_hoc_tmp_ent
-  local ent_to_use=""
-  if [[ -n "${ENTITLEMENTS:-}" && -f "$ENTITLEMENTS" ]]; then
-    ent_to_use="$ENTITLEMENTS"
-  elif [[ -n "$ad_hoc_tmp_ent" ]]; then
-    ent_to_use="$ad_hoc_tmp_ent"
-    log "Using synthesized ad-hoc entitlements (disable-library-validation) at: $ent_to_use"
-  fi
-  if [[ -n "$ent_to_use" ]]; then
-    CS_BASE+=("--entitlements" "$ent_to_use")
-  fi
-
-  if [[ "$kind" != "dev-id-app" && "${NOTARIZE:-0}" == "1" ]]; then
-    log "Disabling notarization (requires Developer ID Application)."
-    NOTARIZE=0
-  fi
-
+  local app="$1" ident="$2" exe="$app/Contents/MacOS/omni" fwdir="$app/Contents/Frameworks"
+  if [[ -z "${ident:-}" ]]; then log "No SIGN_IDENTITY; skipping codesign."; return; fi
+  if [[ "$ident" != "-" ]] && ! identity_exists_in_keychain "$ident"; then log "Identity not found; ad-hoc."; ident="-"; fi
+  local kind; kind="$(classify_identity "$ident")"; log "Identity kind: $kind"
+  if [[ "$REQUIRE_DEV_ID" == "1" && "$kind" != "dev-id-app" ]]; then die "REQUIRE_DEV_ID=1 but identity is not Developer ID Application."; fi
+  local -a CS=(/usr/bin/codesign --force -s "$ident"); [[ "$kind" == "dev-id-app" ]] && CS+=(--options runtime --timestamp)
+  local tmp_ent="" ent_to_use=""
+  mk_ad_hoc_entitlements_if_needed "$ident" tmp_ent
+  if [[ -n "${ENTITLEMENTS:-}" && -f "$ENTITLEMENTS" ]]; then ent_to_use="$ENTITLEMENTS"; elif [[ -n "$tmp_ent" ]]; then ent_to_use="$tmp_ent"; log "Using synthesized ad-hoc entitlements: $ent_to_use"; fi
+  [[ -n "$ent_to_use" ]] && CS+=("--entitlements" "$ent_to_use")
   xattr -rc "$app" 2>/dev/null || true
-
   set +e
   if [[ -d "$fwdir" ]]; then
-    find "$fwdir" -type f -name "*.dylib" -print0 | while IFS= read -r -d '' dylib; do
-      log "Codesigning dylib: ${dylib##*/}"
-      "${CS_BASE[@]}" "$dylib" || log "WARN: codesign dylib failed (continuing)"
-    done
+    find "$fwdir" -type f -name "*.dylib" -print0 | while IFS= read -r -d '' d; do log "Codesigning dylib: ${d##*/}"; "${CS[@]}" "$d" || log "WARN: codesign dylib failed"; done
   fi
-
-  log "Codesigning inner binary"
-  "${CS_BASE[@]}" "$exe" || log "WARN: codesign inner binary failed (continuing)"
-
-  log "Codesigning app bundle"
-  "${CS_BASE[@]}" "$app" || log "WARN: codesign app bundle failed (continuing)"
-
-  /usr/bin/codesign -v --deep --strict --verbose=2 "$app" >/dev/null 2>&1 || {
-    log "codesign verify non-zero (dev is okay)"; /usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | sed 's/^/   /' || true
-  }
-
-  [[ -n "$ad_hoc_tmp_ent" ]] && rm -f "$ad_hoc_tmp_ent"
+  log "Codesigning inner binary"; "${CS[@]}" "$exe" || log "WARN: codesign inner failed"
+  log "Codesigning app bundle";  "${CS[@]}" "$app" || log "WARN: codesign app failed"
+  /usr/bin/codesign -v --deep --strict --verbose=2 "$app" >/dev/null 2>&1 || { log "codesign verify non-zero (dev ok)"; /usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | sed 's/^/   /' || true; }
+  [[ -n "$tmp_ent" ]] && rm -f "$tmp_ent"
+  set -e
 }
 
-build_dmg() {
-  local app="$1" dmg="$2"
-  log "Building DMG -> $dmg"
-  rm -f "$dmg"
-  mkdir -p "$(dirname "$dmg")"
-  local tmp_dir; tmp_dir="$(mktemp -d)"
-  cp -R "$app" "$tmp_dir/"
-  ln -s /Applications "$tmp_dir/Applications"
-  hdiutil create -volname "${APP_NAME}" -fs HFS+ -srcfolder "$tmp_dir" -ov -format UDZO "$dmg" >/dev/null
-  rm -rf "$tmp_dir"
-}
-
-build_zip() {
-  local app="$1" zip="$2"
-  log "Building ZIP -> $zip"
-  rm -f "$zip"
-  mkdir -p "$(dirname "$zip")"
-  /usr/bin/ditto -c -k --keepParent "$app" "$zip"
-}
+build_dmg() { local app="$1" dmg="$2"; log "Building DMG -> $dmg"; rm -f "$dmg"; mkdir -p "$(dirname "$dmg")"; local t; t="$(mktemp -d)"; cp -R "$app" "$t/"; ln -s /Applications "$t/Applications"; hdiutil create -volname "${APP_NAME}" -fs HFS+ -srcfolder "$t" -ov -format UDZO "$dmg" >/dev/null; rm -rf "$t"; }
+build_zip() { local app="$1" zip="$2"; log "Building ZIP -> $zip"; rm -f "$zip"; mkdir -p "$(dirname "$zip")"; /usr/bin/ditto -c -k --keepParent "$app" "$zip"; }
 
 verify_build() {
-  local app="$1"
-  local exe="$app/Contents/MacOS/omni"
-
-  local otool_out=""
-  otool_out="$(/usr/bin/otool -L "$exe" 2>/dev/null || true)"
-  if printf '%s' "$otool_out" | /usr/bin/grep -Fq "/opt/homebrew"; then
-    die "Leftover Homebrew references in binary!"
-  fi
-
-  /usr/bin/codesign -v --deep "$app" >/dev/null 2>&1 || \
-    log "codesign -v --deep returned non-zero; continuing (dev build)."
-
-  /usr/sbin/spctl --assess --type execute --ignore-cache --no-cache "$app" >/dev/null 2>&1 || \
-    log "spctl assess failed (expected for self-signed/Apple Development during dev); continuing."
+  local app="$1" exe="$app/Contents/MacOS/omni"
+  local otool_out=""; otool_out="$(/usr/bin/otool -L "$exe" 2>/dev/null || true)"
+  if printf '%s' "$otool_out" | /usr/bin/grep -Fq "/opt/homebrew"; then die "Leftover Homebrew references in binary!"; fi
+  /usr/bin/codesign -v --deep "$app" >/dev/null 2>&1 || log "codesign -v --deep non-zero; continuing (dev)."
+  /usr/sbin/spctl --assess --type execute --ignore-cache --no-cache "$app" >/dev/null 2>&1 || log "spctl assess failed (expected for dev); continuing."
 }
 
 notarize_dmg() {
   [[ "${NOTARIZE:-0}" == "1" ]] || { log "Skipping notarization"; return 0; }
-  [[ -n "$APPLE_ID" && -n "$TEAM_ID" && -n "$APP_SPEC_PASS" ]] || die "NOTARIZE=1 but APPLE_ID/TEAM_ID/APP_SPEC_PASS not set"
-  log "Notarizing DMG"
-  local dmg="$1"
-  xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_SPEC_PASS" --wait
+  local dmg="$1"; log "Notarizing DMG"
+  if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+    xcrun notarytool submit "$dmg" --keychain-profile "$NOTARY_PROFILE" --wait
+  else
+    [[ -n "$APPLE_ID" && -n "$TEAM_ID" && -n "$APP_SPEC_PASS" ]] || die "NOTARIZE=1 but neither NOTARY_PROFILE nor APPLE_ID/TEAM_ID/APP_SPEC_PASS provided."
+    xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_SPEC_PASS" --wait
+  fi
   xcrun stapler staple "$dmg"
 }
 
-# ================== Main ==================
+# ───────────────────────────────── main ──────────────────────────────────
+[[ $PRINT_CONFIG -eq 1 ]] && { _print_effective_config; exit 0; }
+
 cd "$REPO_ROOT"
 arm64_assert
-if [[ -z "$VERSION" ]]; then VERSION="$(read_version_from_dune)"; fi
+
+if [[ -z "${VERSION:-}" ]]; then VERSION="$(read_version_from_dune)"; fi
 log "Version: $VERSION"
 
 ARCH="$(uname -m || echo unknown)"
 
-# Include version + arch to mirror Windows naming
-DMG_PATH_DEFAULT=".dist/omni-irc-client-${VERSION}-macos-${ARCH}.dmg"
-ZIP_PATH_DEFAULT=".dist/omni-irc-client-${VERSION}-macos-${ARCH}.zip"
-DMG_PATH="${DMG_PATH:-$DMG_PATH_DEFAULT}"
-ZIP_PATH="${ZIP_PATH:-$ZIP_PATH_DEFAULT}"
+# default output names if not provided in config
+: "${DMG_PATH:=".dist/omni-irc-client-${VERSION}-macos-${ARCH}.dmg"}"
+: "${ZIP_PATH:=".dist/omni-irc-client-${VERSION}-macos-${ARCH}.zip"}"
 
 ensure_homebrew
 ensure_opam
@@ -440,8 +392,8 @@ ensure_switch
 ensure_dune_and_deps
 ensure_signing_identity
 
-if [[ "$REQUIRE_DEV_ID" == "1" ]]; then
-  if [[ "$(classify_identity "$SIGN_IDENTITY")" != "dev-id-app" ]]; then
+if [[ "${REQUIRE_DEV_ID:-0}" == "1" ]]; then
+  if [[ "$(classify_identity "${SIGN_IDENTITY:-}")" != "dev-id-app" ]]; then
     die "REQUIRE_DEV_ID=1 set but no Developer ID Application certificate is available in the login keychain."
   fi
 fi
@@ -453,20 +405,14 @@ trap 'rm -rf "$STAGE_DIR"' EXIT
 
 stage_portable "$BIN_PATH" "$STAGE_DIR"
 mk_app_bundle "$STAGE_DIR" "$APP_BUNDLE"
-
 bundle_vendor_libs "$APP_BUNDLE"
-
-codesign_app "$APP_BUNDLE" "$SIGN_IDENTITY"
+codesign_app "$APP_BUNDLE" "${SIGN_IDENTITY:-}"
 verify_build "$APP_BUNDLE"
 
-log "Starting DMG build"
-build_dmg "$APP_BUNDLE" "$DMG_PATH"
+log "Starting DMG build"; build_dmg "$APP_BUNDLE" "$DMG_PATH"
+log "Starting ZIP build"; build_zip "$APP_BUNDLE" "$ZIP_PATH"
 
-log "Starting ZIP build"
-build_zip "$APP_BUNDLE" "$ZIP_PATH"
-
-log "Starting notarize_dmg (may be skipped)"
-notarize_dmg "$DMG_PATH"
+log "Starting notarize_dmg (may be skipped)"; notarize_dmg "$DMG_PATH"
 
 log "Done."
 echo "   App: $APP_BUNDLE"
