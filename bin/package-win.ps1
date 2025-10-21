@@ -14,6 +14,110 @@ Param(
 
 $ErrorActionPreference = "Stop"
 
+# --- OPAM helpers / env hygiene ---------------------------------------------
+function Get-OpamExe {
+  # Don’t touch $cfg here; it’s not defined yet.
+  $cmd = Get-Command opam -CommandType Application -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+
+  $msys = if ($env:MSYS2 -and (Test-Path $env:MSYS2)) { $env:MSYS2 } else { 'C:\msys64' }
+  $tryPaths = @(
+    (Join-Path $msys 'ucrt64\bin\opam.exe'),
+    (Join-Path $msys 'mingw64\bin\opam.exe')
+  ) | Where-Object { Test-Path $_ }
+
+  if ($tryPaths.Count -gt 0) { return $tryPaths[0] }
+  return $null
+}
+
+function Ensure-OpamPackages {
+  param(
+    [Parameter(Mandatory)][string]$OpamExe,
+    [Parameter(Mandatory)][string]$OpamRoot,
+    [Parameter(Mandatory)][string]$Switch
+  )
+  # refresh repos
+  & $OpamExe update --root "$OpamRoot" | Out-Host
+
+  # ensure dune + common build deps
+  $need = @('dune', 'ocamlfind', 'dune-configurator')
+  foreach ($pkg in $need) {
+    $installed = & $OpamExe list --root "$OpamRoot" --switch $Switch --installed --short $pkg 2>$null
+    if (-not ($installed -match '^\s*' + [regex]::Escape($pkg) + '(\.|$)')) {
+      Write-Host "  -> opam install $pkg"
+      & $OpamExe install --root "$OpamRoot" --switch $Switch -y $pkg | Out-Host
+    }
+  }
+
+  $hasOpamFiles = @(Get-ChildItem -Filter '*.opam' -Path . -ErrorAction SilentlyContinue).Count -gt 0
+  $hasOpamDir   = Test-Path -LiteralPath '.\opam'
+  if ($hasOpamFiles -or $hasOpamDir) {
+    Write-Host "  -> opam install . --deps-only"
+    & $OpamExe install --root "$OpamRoot" --switch $Switch -y . --deps-only | Out-Host
+  }
+}
+
+function Ensure-OpamSwitchBinReady {
+  param(
+    [Parameter(Mandatory)][string]$OpamExe,
+    [Parameter(Mandatory)][string]$OpamRoot,
+    [Parameter(Mandatory)][string]$Switch
+  )
+  # Ask opam where this switch's bin lives
+  $bin = (& $OpamExe var --root "$OpamRoot" --switch $Switch bin 2>$null).Trim()
+  if (-not $bin) { throw "Could not resolve opam var 'bin' for switch '$Switch'." }
+
+  # Create the directory tree if it's not there yet
+  if (-not (Test-Path -LiteralPath $bin)) {
+    New-Item -ItemType Directory -Force -Path $bin | Out-Null
+  }
+
+  # Make sure it's writable (ACLs sometimes get weird under %LOCALAPPDATA%)
+  try {
+    & icacls $bin /grant "$($env:USERNAME):(OI)(CI)M" | Out-Null
+  } catch { }
+
+  # Remove stale/locked shim targets if present (so shim package can overwrite)
+  $shimNames = @(
+    'x86_64-w64-mingw32-gcc.exe',
+    'x86_64-w64-mingw32-g++.exe',
+    'x86_64-w64-mingw32-ar.exe',
+    'x86_64-w64-mingw32-ranlib.exe',
+    'pkg-config.exe'
+  )
+  foreach ($n in $shimNames) {
+    $p = Join-Path $bin $n
+    if (Test-Path -LiteralPath $p) {
+      try {
+        attrib -r $p 2>$null
+        Remove-Item -LiteralPath $p -Force
+      } catch {
+        # One more shove in case it's locked read-only
+        try { & icacls $p /grant "$($env:USERNAME):F" | Out-Null } catch { }
+        attrib -r $p 2>$null
+        Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+
+  return $bin
+}
+
+# Clear inherited vars that often break builds
+foreach ($v in 'OPAMSWITCH','OPAMREPOSITORY','OCAMLLIB','OCAMLPATH',
+                'CAML_LD_LIBRARY_PATH','CAML_LD_LIBRARY_PATH__F',
+                'OCAML_TOPLEVEL_PATH') {
+  if (Test-Path Env:$v) { Remove-Item Env:$v -ErrorAction SilentlyContinue }
+}
+
+# Canonical Windows opam root for this packaging step
+$OpamRoot = $env:OPAMROOT
+if ([string]::IsNullOrWhiteSpace($OpamRoot)) {
+  $OpamRoot = Join-Path $env:LOCALAPPDATA 'opam'
+}
+$env:OPAMROOT = $OpamRoot
+$env:OPAMYES  = "1"
+
 # ───────────────────────── repo + config files ─────────────────────────
 $RepoRoot   = (Split-Path -Parent $PSScriptRoot)
 $ConfigDir  = Join-Path $RepoRoot "installer"
@@ -27,7 +131,6 @@ function Resolve-AbsPath([string]$p) {
 }
 
 # ───────────────────────── allowed config keys ─────────────────────────
-# Keep this list explicit; only these keys load from INI/ENV.
 $AllowedKeys = @(
   # build
   'SWITCH','BUILD_PROFILE','MSYS2','OUT_DIR','EXE_NAME','VERSION','PLATFORM','ARCH',
@@ -86,6 +189,7 @@ if ($Config) { Load-IniAllowed (Resolve-AbsPath $Config) $cfg }
 
 # ENV snapshot
 foreach ($k in $AllowedKeys) {
+  if ($k -eq 'PLATFORM') { continue }
   $envVal = [Environment]::GetEnvironmentVariable($k, "Process")
   if ($envVal) { $cfg[$k] = $envVal }
 }
@@ -105,7 +209,8 @@ function Print-EffectiveConfig {
   foreach ($k in $AllowedKeys) {
     $v = $cfg[$k]
     if ($k -eq 'WIN_CERT_PFX_PASS') { $v = '****' }
-    "{0,-20} = {1}" -f $k, ($v ?? '')
+    $vOut = if ($null -ne $v -and "$v" -ne '') { "$v" } else { '' }
+    "{0,-20} = {1}" -f $k, $vOut
   }
   Write-Host "--------------------------"
 }
@@ -288,15 +393,89 @@ function New-WixFilesFragment {
   [System.IO.File]::WriteAllText($OutPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 }
 
-# ───────────────────────── Build portable payload ───────────────────────
-Write-Host ">> Activating opam switch: $($cfg.SWITCH)"
-(& opam env --switch=$($cfg.SWITCH) --set-switch) -split '\r?\n' | ForEach-Object { Invoke-Expression $_ }
+# ───────────────────────── Build portable payload (robust) ───────────────────────
+# Find opam
+$opam = Get-OpamExe
+if (-not $opam) {
+  throw @"
+opam was not found on PATH or in common MSYS2 locations.
+Install opam (e.g. OCaml for Windows, or MSYS2 package) and re-run.
+Searched PATH, C:\msys64\ucrt64\bin, and C:\msys64\mingw64\bin.
+"@
+}
+
+# Ensure opam is initialized at this root
+if (-not (Test-Path (Join-Path $OpamRoot 'config'))) {
+  Write-Host ">> opam init @ $OpamRoot"
+  & $opam init --root "$OpamRoot" --disable-sandboxing | Out-Host
+}
+
+Write-Host ">> Activating opam switch: $($cfg.SWITCH) (root: $OpamRoot)"
+# Ensure both repos present on Windows
+try {
+  $reposShort = & $opam repo list --root "$OpamRoot" --short 2>$null
+  $repos = $reposShort -split '\r?\n'
+  if (-not ($repos -contains 'default')) {
+    Write-Host "  -> adding opam repo 'default'"
+    & $opam repo add --root "$OpamRoot" default https://opam.ocaml.org --set-default | Out-Host
+  }
+  if ($IsWindows -and -not ($repos -contains 'default-mingw')) {
+    Write-Host "  -> adding opam repo 'default-mingw'"
+    & $opam repo add --root "$OpamRoot" default-mingw https://github.com/ocaml-opam/opam-repository-mingw.git --set-default | Out-Host
+  }
+  Write-Host "  -> opam update"
+  & $opam update --root "$OpamRoot" | Out-Host
+} catch {
+  Write-Warning "opam repo/update failed: $($_.Exception.Message)"
+}
+
+# Create switch if missing, with explicit package set
+try {
+  $have = & $opam switch list --root "$OpamRoot" --short 2>$null
+  if (-not (($have -split '\r?\n') -contains $cfg.SWITCH)) {
+    Write-Host "  -> creating opam switch $($cfg.SWITCH)"
+    $candidates = @(
+      'ocaml-compiler.5.3.0,system-mingw,ocaml-env-mingw64,mingw-w64-shims',
+      'ocaml-compiler.5.2.1,system-mingw,ocaml-env-mingw64,mingw-w64-shims',
+      'ocaml-base-compiler.5.2.1,system-mingw,ocaml-env-mingw64,mingw-w64-shims'
+    )
+    $created = $false
+    foreach ($spec in $candidates) {
+      Write-Host "     - trying: $spec"
+      & $opam switch create --root "$OpamRoot" $cfg.SWITCH --packages $spec | Out-Host
+      $envLines = & $opam env --root "$OpamRoot" --switch $cfg.SWITCH --set-switch
+      $switchBin = Ensure-OpamSwitchBinReady -OpamExe $opam -OpamRoot $OpamRoot -Switch $cfg.SWITCH
+      Write-Host ">> switch bin ready: $switchBin"
+      if ($LASTEXITCODE -eq 0) { $created = $true; break }
+    }
+    if (-not $created) {
+      throw "Could not create switch '$($cfg.SWITCH)' with any candidate package set."
+    }
+  }
+} catch {
+  throw "Switch creation failed: $($_.Exception.Message)"
+}
+
+# Apply env for THIS process only
+$envLines = & $opam env --root "$OpamRoot" --switch $cfg.SWITCH --set-switch
+$envLines -split '\r?\n' | ForEach-Object { if ($_ -match '\S') { Invoke-Expression $_ } }
+
+# Sanity print
+try {
+  $oc = Get-Command ocamlc -ErrorAction Stop
+  $ver = & $oc.Source -version
+  $where = & $oc.Source -where
+  Write-Host ("Using ocamlc {0} at {1} ({2})" -f $ver, $where, $oc.Source)
+} catch {}
 
 Write-Host ">> Building dune + deps"
 $oldPath = $env:Path
 try {
-  $switchBin = (opam var bin).Trim()
+  $switchBin = (& $opam var --root "$OpamRoot" --switch $cfg.SWITCH bin).Trim()
   if (-not (Test-Path $switchBin)) { throw "opam var bin returned '$switchBin' which doesn't exist." }
+
+  # Ensure dune + build deps are present in the switch
+  Ensure-OpamPackages -OpamExe $opam -OpamRoot $OpamRoot -Switch $cfg.SWITCH
 
   $env:Path = "$switchBin;$env:Path"
   Write-Host ">> PATH (temp prepend): $switchBin"
@@ -308,19 +487,41 @@ try {
   if (-not $dune) { throw "dune was not found in $switchBin even after PATH prepend." }
   Write-Host ">> dune resolved: $dune"
 
-  Write-Host ">> Building ($($cfg.BUILD_PROFILE))"
+  $built = $null
+  # We build the app with dune; opam is used only for deps.
+  Write-Host ">> Building with dune ($($cfg.BUILD_PROFILE))"
   & $dune build --profile $cfg.BUILD_PROFILE bin/omni.exe
+  $candidate = Join-Path $RepoRoot "_build\default\bin\omni.exe"
+  if (Test-Path $candidate) { $built = $candidate }
 
-  $built = Join-Path $RepoRoot "_build\default\bin\omni.exe"
-  if (-not (Test-Path $built)) { throw "Expected exe not found at $built" }
+  if (-not $built) {
+    Write-Host ">> Building with dune ($($cfg.BUILD_PROFILE))"
+    & $dune build --profile $cfg.BUILD_PROFILE bin/omni.exe
+    $candidate = Join-Path $RepoRoot "_build\default\bin\omni.exe"
+    if (Test-Path $candidate) { $built = $candidate }
+  }
 
+  if (-not $built) {
+    # last probe: anything resembling omni-irc-client in switch bin
+    $probe = Get-ChildItem -LiteralPath $switchBin -Filter '*omni*irc*client*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($probe) { $built = $probe.FullName }
+  }
+
+  if (-not $built) {
+    throw "Could not locate built executable. Ensure 'omni-irc-client' opam package exists or 'bin/omni.exe' dune target is present."
+  }
+
+  Write-Host ">> Build OK: $built"
+
+  # ---------- Stage output ----------
   Write-Host ">> Staging output -> $(Resolve-AbsPath $cfg.OUT_DIR)"
   Remove-Item -Recurse -Force $OutDirAbs -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $OutDirAbs | Out-Null
   Copy-Item $built (Join-Path $OutDirAbs $cfg.EXE_NAME)
 
   # Dependency harvest via ntldd (MSYS2 UCRT64)
-  $ntldd = Join-Path $cfg.MSYS2 "ucrt64\bin\ntldd.exe"
+  $ntlddRoot = if ($cfg.MSYS2) { $cfg.MSYS2 } else { if ($env:MSYS2) { $env:MSYS2 } else { 'C:\msys64' } }
+  $ntldd = Join-Path $ntlddRoot "ucrt64\bin\ntldd.exe"
   if (Test-Path $ntldd) {
     Write-Host ">> Harvesting DLLs via ntldd"
     $deps = & $ntldd -R $built |

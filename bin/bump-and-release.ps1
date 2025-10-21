@@ -89,9 +89,42 @@ if ($assets.Count -eq 0) {
 Write-Host ">> Attaching the following artifact(s):"
 $assets | ForEach-Object { Write-Host "   - $_" }
 
-# 4) Create or update GitHub release
+# Create or update GitHub release
 $tag   = "v$Version"
 $notes = "Release $tag"
+
+# Fetch existing assets and delete stale ones for this version ---
+try {
+  $relJson = gh release view "v$Version" --repo $RepoSlug --json assets,title,tagName,uploadUrl,htmlUrl 2>$null
+  if ($LASTEXITCODE -eq 0 -and $relJson) {
+    $rel = $relJson | ConvertFrom-Json
+    $existing = @{}
+    foreach ($as in $rel.assets) { $existing[$as.name] = $as }
+
+    # Keep exactly the set we’re about to upload; delete all others that match this version prefix
+    $keep = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($p in $assets) { [void]$keep.Add((Split-Path $p -Leaf)) }
+
+    # Same prefix pattern you used for discovery:
+    $verEsc = [Regex]::Escape($Version)
+    $prefixPattern = "^(?i)omni-irc-client-$verEsc-"
+
+    foreach ($kv in $existing.GetEnumerator()) {
+      $name = $kv.Key
+      if ($name -match $prefixPattern -and -not $keep.Contains($name)) {
+        Write-Host ">> Removing stale asset: $name"
+        gh release delete-asset "v$Version" "$name" --repo $RepoSlug --yes
+      }
+    }
+
+    # Refresh release notes/title to keep them in sync
+    if ($notes -and $notes.Trim()) {
+      gh release edit "v$Version" --repo $RepoSlug --notes "$notes" --title "omni-irc v$Version" | Out-Null
+    }
+  }
+} catch {
+  Write-Warning "Could not query existing assets for v$Version $($_.Exception.Message)"
+}
 
 # Try to pull the top section for this version from CHANGES.md (optional best effort)
 $changes = Join-Path $repoRoot "CHANGES.md"
@@ -117,7 +150,12 @@ try {
   gh release create $tag --repo $RepoSlug --title "omni-irc $tag" --notes $notes @assets
 } catch {
   $created = $false
-  Write-Warning "Release $tag may already exist. Attempting to upload assets only."
+  Write-Warning "Release $tag may already exist. Uploading assets with --clobber."
+}
+if (-not $created) {
+  foreach ($a in $assets) {
+    gh release upload $tag $a --repo $RepoSlug --clobber
+  }
 }
 
 if (-not $created) {
