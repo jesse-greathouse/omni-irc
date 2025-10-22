@@ -4,7 +4,8 @@
 /dist-opam/
 /_build/
 /_opam/
-/installer/certificate
+installer/msix
+installer/certificate
 *.install
 *.swp
 *.swo

@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 
 # --- OPAM helpers / env hygiene ---------------------------------------------
 function Get-OpamExe {
-  # Don’t touch $cfg here; it’s not defined yet.
+  # Don’t touch $script:cfg here; it’s not defined yet.
   $cmd = Get-Command opam -CommandType Application -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Source }
 
@@ -34,12 +34,13 @@ function Ensure-OpamPackages {
   param(
     [Parameter(Mandatory)][string]$OpamExe,
     [Parameter(Mandatory)][string]$OpamRoot,
-    [Parameter(Mandatory)][string]$Switch
+    [Parameter(Mandatory)][string]$Switch,
+    [switch]$SkipUpdate
   )
-  # refresh repos
-  & $OpamExe update --root "$OpamRoot" | Out-Host
+  if (-not $SkipUpdate) {
+    & $OpamExe update --root "$OpamRoot" | Out-Host
+  }
 
-  # ensure dune + common build deps
   $need = @('dune', 'ocamlfind', 'dune-configurator')
   foreach ($pkg in $need) {
     $installed = & $OpamExe list --root "$OpamRoot" --switch $Switch --installed --short $pkg 2>$null
@@ -131,17 +132,16 @@ function Resolve-AbsPath([string]$p) {
 }
 
 # ───────────────────────── allowed config keys ─────────────────────────
-$AllowedKeys = @(
-  # build
+$script:AllowedKeys = @(
   'SWITCH','BUILD_PROFILE','MSYS2','OUT_DIR','EXE_NAME','VERSION','PLATFORM','ARCH',
-  # wix/output
   'WIX_EXE','ZIP_PATH','MSI_PATH',
-  # signing (optional)
-  'WIN_SIGN','WIN_CERT_SUBJECT','WIN_CERT_PFX','WIN_CERT_PFX_PASS','WIN_TIMESTAMP_URL'
+  'WIN_SIGN','WIN_CERT_SUBJECT','WIN_CERT_PFX','WIN_CERT_PFX_PASS','WIN_TIMESTAMP_URL',
+  'MSIX_PATH','APPX_MANIFEST','APPX_PUBLISHER','APPX_IDENTITY','APPX_DISPLAY_NAME','APPX_PUBLISHER_DISPLAY_NAME',
+  'APPINSTALLER_PATH','DIST_TARGET','APPX_URI_BASE','APPINSTALLER_NAME','RUN_APP_CERT_KIT'
 )
 
 # hard defaults (minimal; most defaults live in build.dist.ini)
-$cfg = [ordered]@{
+$script:cfg = [ordered]@{
   SWITCH            = 'omni-irc-dev'
   BUILD_PROFILE     = 'release'
   MSYS2             = 'C:\msys64'
@@ -160,57 +160,88 @@ $cfg = [ordered]@{
   WIN_CERT_PFX      = ''              # e.g. C:\path\code-signing.pfx
   WIN_CERT_PFX_PASS = ''              # secret (redacted in print)
   WIN_TIMESTAMP_URL = 'http://timestamp.digicert.com'
+
+  # MSIX configs
+  MSIX_PATH                 = ''       # auto-name later
+  APPX_MANIFEST             = 'installer\msix\AppxManifest.xml'
+  APPX_PUBLISHER            = 'CN=Jesse Greathouse'
+  APPX_IDENTITY             = 'com.jesse.omni-irc-client'
+  APPX_DISPLAY_NAME         = 'Omni IRC Client'
+  APPX_PUBLISHER_DISPLAY_NAME = 'Jesse Greathouse'
+  APPINSTALLER_PATH         = ''           # optional: emit .appinstaller
+  DIST_TARGET               = 'store'      # 'store' | 'sideload'
+  APPX_URI_BASE             = ''           # e.g. 'https://downloads.greathousetech.com/omni'
+  APPINSTALLER_NAME         = 'omni-irc-client.appinstaller'
+  RUN_APP_CERT_KIT          = '1'          # run App Certification Kit if found
 }
 
 # ───────────────────────── INI loader (safe) ───────────────────────────
-function Load-IniAllowed([string]$path, [hashtable]$into) {
-  if (-not (Test-Path $path)) { return }
-  Get-Content -Raw -LiteralPath $path -Encoding UTF8 `
-  | Select-String -Pattern '^\s*([^#;].*?)$' -AllMatches `
-  | ForEach-Object { $_.Matches.Value } `
-  | Where-Object { $_ -match '^\s*[A-Z0-9_]+\s*=' } `
-  | ForEach-Object {
-      $line = $_.Trim()
-      $eq   = $line.IndexOf('=')
-      if ($eq -gt 0) {
-        $k = $line.Substring(0,$eq).Trim()
-        $v = $line.Substring($eq+1).Trim()
-        if ($AllowedKeys -contains $k) {
-          $into[$k] = $v
-        }
-      }
+function _Log([string]$msg) {
+  $ts = (Get-Date).ToString('HH:mm:ss.fff')
+  Write-Host "[$ts] $msg"
+}
+
+# Tracks where each key came from and what value it had when set.
+if (-not $script:cfgMeta) { $script:cfgMeta = @{} }
+
+# mode: 'overwrite' (always clobber), 'fill-only' (only set if empty)
+function Load-IniAllowed {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$path,
+    [Parameter(Mandatory)][System.Collections.IDictionary]$into
+  )
+
+  if (-not (Test-Path -LiteralPath $path)) { return }
+
+  $allowed = $script:AllowedKeys
+  foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8)) {
+    if ($null -eq $line) { continue }
+    $line = ($line -replace "^\uFEFF", '').Trim()
+    if ($line -eq '' -or $line -match '^\s*[#;]') { continue }
+
+    if ($line -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$') {
+      $k = $matches[1].Trim()
+      $v = $matches[2].Trim()
+      if ($allowed -contains $k) { $into[$k] = $v }
     }
+  }
 }
 
-# precedence: dist -> local -> --config -> ENV -> CLI args
-Load-IniAllowed $ConfigDist $cfg
-Load-IniAllowed $ConfigLocal $cfg
-if ($Config) { Load-IniAllowed (Resolve-AbsPath $Config) $cfg }
+# ───────────────────────── load config (precedence) ─────────────────────
+# dist -> local -> --config (path) -> ENV (fill-only) -> CLI
+Load-IniAllowed $ConfigDist  $script:cfg
+Load-IniAllowed $ConfigLocal $script:cfg
+if ($Config) { Load-IniAllowed (Resolve-AbsPath $Config) $script:cfg }
 
-# ENV snapshot
-foreach ($k in $AllowedKeys) {
-  if ($k -eq 'PLATFORM') { continue }
-  $envVal = [Environment]::GetEnvironmentVariable($k, "Process")
-  if ($envVal) { $cfg[$k] = $envVal }
+# ENV snapshot (fill-only: do not clobber INI/CLI)
+foreach ($k in $script:AllowedKeys) {
+  if ($k -eq 'PLATFORM') { continue } # explicitly not taken from env
+  $envVal = [Environment]::GetEnvironmentVariable($k, 'Process')
+  if ($envVal -and [string]::IsNullOrWhiteSpace([string]$script:cfg[$k])) {
+    $script:cfg[$k] = $envVal
+  }
 }
 
-# CLI overrides
-if ($Switch)       { $cfg.SWITCH       = $Switch }
-if ($BuildProfile) { $cfg.BUILD_PROFILE= $BuildProfile }
-if ($MSYS2)        { $cfg.MSYS2        = $MSYS2 }
-if ($OutDir)       { $cfg.OUT_DIR      = $OutDir }
-if ($ExeName)      { $cfg.EXE_NAME     = $ExeName }
-if ($Version)      { $cfg.VERSION      = $Version }
-if ($Platform)     { $cfg.PLATFORM     = $Platform }
-if ($Arch)         { $cfg.ARCH         = $Arch }
+# CLI overrides (highest after --config)
+if ($Switch)       { $script:cfg.SWITCH        = $Switch }
+if ($BuildProfile) { $script:cfg.BUILD_PROFILE = $BuildProfile }
+if ($MSYS2)        { $script:cfg.MSYS2         = $MSYS2 }
+if ($OutDir)       { $script:cfg.OUT_DIR       = $OutDir }
+if ($ExeName)      { $script:cfg.EXE_NAME      = $ExeName }
+if ($Version)      { $script:cfg.VERSION       = $Version }
+if ($Platform)     { $script:cfg.PLATFORM      = $Platform }
+if ($Arch)         { $script:cfg.ARCH          = $Arch }
 
 function Print-EffectiveConfig {
   Write-Host "---- effective config ----"
-  foreach ($k in $AllowedKeys) {
-    $v = $cfg[$k]
-    if ($k -eq 'WIN_CERT_PFX_PASS') { $v = '****' }
-    $vOut = if ($null -ne $v -and "$v" -ne '') { "$v" } else { '' }
-    "{0,-20} = {1}" -f $k, $vOut
+  foreach ($k in $script:AllowedKeys) {
+    $v = $script:cfg[$k]
+    if ($k -eq 'WIN_CERT_PFX_PASS' -and $null -ne $v -and "$v" -ne '') {
+      $v = '****'
+    }
+    $val = if ($null -ne $v -and "$v" -ne '') { "$v" } else { '' }
+    "{0,-24} = {1}" -f $k, $val
   }
   Write-Host "--------------------------"
 }
@@ -236,11 +267,11 @@ function Resolve-Arch([string]$a) {
   } catch {}
   'x64'
 }
-$Arch = Resolve-Arch $cfg.ARCH
-$cfg.ARCH = $Arch
+$Arch = Resolve-Arch $script:cfg.ARCH
+$script:cfg.ARCH = $Arch
 $WixArch = if ($Arch -eq 'arm64') { 'arm64' } elseif ($Arch -eq 'x86') { 'x86' } else { 'x64' }
 
-$version = $cfg.VERSION
+$version = $script:cfg.VERSION
 if (-not $version) {
   $version = "0.0.0"
   $dp = Join-Path $RepoRoot "dune-project"
@@ -252,22 +283,22 @@ if (-not $version) {
 if (-not $version -or $version -eq "0.0.0") {
   throw "Cannot determine Version (set VERSION or ensure dune-project contains '(version ...)')."
 }
-$cfg.VERSION = $version
+$script:cfg.VERSION = $version
 
 # ───────────────────────── path setup ───────────────────────────────────
-$OutDirAbs     = Resolve-AbsPath $cfg.OUT_DIR
+$OutDirAbs     = Resolve-AbsPath $script:cfg.OUT_DIR
 $WixOutDirAbs  = Resolve-AbsPath ".dist\wix"
 $FilesWxsAbs   = Join-Path $WixOutDirAbs "Files.wxs"
 $ProductWxsAbs = Resolve-AbsPath "installer\wix\Product.wxs"
 
-if ([string]::IsNullOrEmpty($cfg.ZIP_PATH)) {
-  $cfg.ZIP_PATH = ".dist\omni-irc-client-$version-$($cfg.PLATFORM)-$Arch.zip"
+if ([string]::IsNullOrEmpty($script:cfg.ZIP_PATH)) {
+  $script:cfg.ZIP_PATH = ".dist\omni-irc-client-$version-$($script:cfg.PLATFORM)-$Arch.zip"
 }
-if ([string]::IsNullOrEmpty($cfg.MSI_PATH)) {
-  $cfg.MSI_PATH = ".dist\omni-irc-client-$version-$($cfg.PLATFORM)-$Arch.msi"
+if ([string]::IsNullOrEmpty($script:cfg.MSI_PATH)) {
+  $script:cfg.MSI_PATH = ".dist\omni-irc-client-$version-$($script:cfg.PLATFORM)-$Arch.msi"
 }
-$ZipAbs = Resolve-AbsPath $cfg.ZIP_PATH
-$MsiAbs = Resolve-AbsPath $cfg.MSI_PATH
+$ZipAbs = Resolve-AbsPath $script:cfg.ZIP_PATH
+$MsiAbs = Resolve-AbsPath $script:cfg.MSI_PATH
 
 # ───────────────────────── signtool helpers ─────────────────────────────
 function Resolve-SignTool {
@@ -283,21 +314,84 @@ function Resolve-SignTool {
   return $null
 }
 
+function Test-SigningReady {
+  # Returns $true if we have a usable signing identity, else $false (and prints one warning)
+  if ($script:cfg.WIN_SIGN -ne '1') { return $false }
+
+  $signtool = Resolve-SignTool
+  if (-not $signtool) {
+    Write-Warning "WIN_SIGN=1 but signtool.exe not found. Signing will be skipped."
+    return $false
+  }
+
+  if ($script:cfg.WIN_CERT_PFX) {
+    $pfx = (Resolve-Path $script:cfg.WIN_CERT_PFX -ErrorAction SilentlyContinue)?.Path
+    if (-not $pfx -or -not (Test-Path $pfx)) {
+      Write-Warning "WIN_SIGN=1 but WIN_CERT_PFX '$($script:cfg.WIN_CERT_PFX)' not found. Signing will be skipped."
+      return $false
+    }
+    return $true
+  }
+
+  if ($script:cfg.WIN_CERT_SUBJECT) {
+    try {
+      $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My','CurrentUser')
+      $store.Open('ReadOnly')
+      $matches = $store.Certificates.Find(
+        [System.Security.Cryptography.X509Certificates.X509FindType]::FindBySubjectDistinguishedName,
+        $script:cfg.WIN_CERT_SUBJECT, $false
+      )
+      $store.Close()
+      if ($matches.Count -gt 0) { return $true }
+    } catch { }
+    Write-Warning "WIN_SIGN=1 but no certificate with subject '$($script:cfg.WIN_CERT_SUBJECT)' was found in CurrentUser\My. Signing will be skipped."
+    return $false
+  }
+
+  Write-Warning "WIN_SIGN=1 but neither WIN_CERT_PFX nor WIN_CERT_SUBJECT is set. Signing will be skipped."
+  return $false
+}
+
+$script:_signingReady = $null  # cache
 function Sign-File([string]$path) {
-  if ($cfg.WIN_SIGN -ne '1') { return }
+  if ($script:_signingReady -eq $null) { $script:_signingReady = (Test-SigningReady) }
+  if (-not $script:_signingReady) { return }
+
+  $signtool = Resolve-SignTool
+  $ts = $script:cfg.WIN_TIMESTAMP_URL
+  $args = @('sign','/fd','sha256','/tr', $ts, '/td','sha256')
+
+  if ($script:cfg.WIN_CERT_PFX) {
+    $pfx = (Resolve-Path $script:cfg.WIN_CERT_PFX).Path
+    $args += @('/f', $pfx)
+    if ($script:cfg.WIN_CERT_PFX_PASS) { $args += @('/p', $script:cfg.WIN_CERT_PFX_PASS) }
+  } elseif ($script:cfg.WIN_CERT_SUBJECT) {
+    $args += @('/n', $script:cfg.WIN_CERT_SUBJECT)
+  }
+
+  & $signtool @args $path | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    # Fail fast once to avoid spamming every file
+    Write-Warning "Signing failed for '$path' (code $LASTEXITCODE). Further signing will be skipped."
+    $script:_signingReady = $false
+  }
+}
+
+function Sign-File([string]$path) {
+  if ($script:cfg.WIN_SIGN -ne '1') { return }
   $signtool = Resolve-SignTool
   if (-not $signtool) { throw "WIN_SIGN=1 but signtool.exe not found. Install Windows SDK." }
 
-  $ts = $cfg.WIN_TIMESTAMP_URL
+  $ts = $script:cfg.WIN_TIMESTAMP_URL
   $args = @('sign','/fd','sha256','/tr', $ts, '/td','sha256')
 
-  if ($cfg.WIN_CERT_PFX) {
-    $pfx = Resolve-AbsPath $cfg.WIN_CERT_PFX
+  if ($script:cfg.WIN_CERT_PFX) {
+    $pfx = Resolve-AbsPath $script:cfg.WIN_CERT_PFX
     if (-not (Test-Path $pfx)) { throw "PFX not found at $pfx" }
     $args += @('/f', $pfx)
-    if ($cfg.WIN_CERT_PFX_PASS) { $args += @('/p', $cfg.WIN_CERT_PFX_PASS) }
-  } elseif ($cfg.WIN_CERT_SUBJECT) {
-    $args += @('/n', $cfg.WIN_CERT_SUBJECT)
+    if ($script:cfg.WIN_CERT_PFX_PASS) { $args += @('/p', $script:cfg.WIN_CERT_PFX_PASS) }
+  } elseif ($script:cfg.WIN_CERT_SUBJECT) {
+    $args += @('/n', $script:cfg.WIN_CERT_SUBJECT)
   } else {
     throw "WIN_SIGN=1 but neither WIN_CERT_PFX nor WIN_CERT_SUBJECT is set."
   }
@@ -305,10 +399,125 @@ function Sign-File([string]$path) {
   & $signtool @args $path | Write-Host
 }
 
+function Resolve-MakeAppx {
+  $candidates = @(
+    "$env:ProgramFiles (x86)\Windows Kits\10\bin\x64\makeappx.exe",
+    "$env:ProgramFiles\Windows Kits\10\bin\x64\makeappx.exe"
+  )
+  foreach ($p in $candidates) { if (Test-Path $p) { return $p } }
+  $cmd = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Path }
+  return $null
+}
+
+function Get-WinSdkVersionFromMakeAppx([string]$makeappxPath) {
+  # e.g. ...\Windows Kits\10\bin\10.0.26100.0\x64\makeappx.exe -> 10.0.26100.0
+  $m = $makeappxPath -replace '\\','/' -match '/bin/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/'
+  if ($m) { return $Matches[1] }
+  return "10.0.0.0"
+}
+
+function Update-AppxManifest {
+  param(
+    [Parameter(Mandatory)] [string] $ManifestPath,
+    [Parameter(Mandatory)] [string] $Version,
+    [Parameter(Mandatory)] [string] $IdentityName,
+    [Parameter(Mandatory)] [string] $Publisher,
+    [Parameter(Mandatory)] [string] $DisplayName,
+    [Parameter(Mandatory)] [string] $PublisherDisplayName,
+    [string] $SdkVersion = "10.0.26100.0"
+  )
+
+  [xml]$xml = Get-Content -LiteralPath $ManifestPath
+
+  # Always use the document element (root <Package/>)
+  $pkg = [System.Xml.XmlElement]$xml.DocumentElement
+
+  # Namespaces
+  $nsFoundation = "http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  $nsUap        = "http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  $nsRescap     = "http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+
+  # Ensure xmlns and IgnorableNamespaces
+  if (-not $pkg.HasAttribute("xmlns:uap"))    { $pkg.SetAttribute("xmlns:uap",    $nsUap) }
+  if (-not $pkg.HasAttribute("xmlns:rescap")) { $pkg.SetAttribute("xmlns:rescap", $nsRescap) }
+
+  $ign = $pkg.GetAttribute("IgnorableNamespaces")
+  $need = @("uap","rescap")
+  foreach ($p in $need) {
+    if (-not ($ign -split '\s+' | Where-Object { $_ -eq $p })) {
+      $ign = (($ign, $p) -ne $null -and ($ign, $p) -ne "") -join ' '
+      $ign = ($ign -split '\s+' | Where-Object { $_ -ne '' } | Select-Object -Unique) -join ' '
+      $pkg.SetAttribute("IgnorableNamespaces", $ign)
+    }
+  }
+
+  # Quick XPath helper with namespaces
+  $nsmgr = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+  $nsmgr.AddNamespace("f", $nsFoundation)
+  $nsmgr.AddNamespace("uap", $nsUap)
+  $nsmgr.AddNamespace("rescap", $nsRescap)
+
+  # Identity + Properties
+  $id = $pkg.SelectSingleNode("f:Identity", $nsmgr)
+  if (-not $id) {
+    $id = $xml.CreateElement("Identity", $nsFoundation)
+    $pkg.AppendChild($id) | Out-Null
+  }
+  $id.SetAttribute("Name",      $IdentityName)
+  $id.SetAttribute("Publisher", $Publisher)
+  $id.SetAttribute("Version",   "$Version.0")
+
+  $props = $pkg.SelectSingleNode("f:Properties", $nsmgr)
+  if (-not $props) {
+    $props = $xml.CreateElement("Properties", $nsFoundation)
+    $pkg.AppendChild($props) | Out-Null
+  }
+  # These are simple elements, not attributes:
+  $disp = $props.SelectSingleNode("f:DisplayName", $nsmgr)
+  if (-not $disp) { $disp = $xml.CreateElement("DisplayName", $nsFoundation); $props.AppendChild($disp) | Out-Null }
+  $disp.InnerText = $DisplayName
+
+  $pdisp = $props.SelectSingleNode("f:PublisherDisplayName", $nsmgr)
+  if (-not $pdisp) { $pdisp = $xml.CreateElement("PublisherDisplayName", $nsFoundation); $props.AppendChild($pdisp) | Out-Null }
+  $pdisp.InnerText = $PublisherDisplayName
+
+  # Dependencies / TargetDeviceFamily (Desktop)
+  $deps = $pkg.SelectSingleNode("f:Dependencies", $nsmgr)
+  if (-not $deps) {
+    $deps = $xml.CreateElement("Dependencies", $nsFoundation)
+    $pkg.AppendChild($deps) | Out-Null
+  }
+  $tdf = $deps.SelectSingleNode("f:TargetDeviceFamily[@Name='Windows.Desktop']", $nsmgr)
+  if (-not $tdf) {
+    $tdf = $xml.CreateElement("TargetDeviceFamily", $nsFoundation)
+    $tdf.SetAttribute("Name","Windows.Desktop")
+    $deps.AppendChild($tdf) | Out-Null
+  }
+  if (-not $tdf.GetAttribute("MinVersion"))       { $tdf.SetAttribute("MinVersion","10.0.0.0") }
+  if (-not $tdf.GetAttribute("MaxVersionTested")) { $tdf.SetAttribute("MaxVersionTested",$SdkVersion) }
+
+  # Capabilities + runFullTrust
+  $caps = $pkg.SelectSingleNode("f:Capabilities", $nsmgr)
+  if (-not $caps) {
+    $caps = $xml.CreateElement("Capabilities", $nsFoundation)
+    $pkg.AppendChild($caps) | Out-Null
+  }
+  $runFT = $caps.SelectSingleNode("rescap:Capability[@Name='runFullTrust']", $nsmgr)
+  if (-not $runFT) {
+    $runFT = $xml.CreateElement("Capability", $nsRescap)
+    # prefix for readability in the saved XML (optional)
+    $runFT = [System.Xml.XmlElement]$caps.AppendChild($runFT)
+    $runFT.SetAttribute("Name","runFullTrust") | Out-Null
+  }
+
+  $xml.Save($ManifestPath)
+}
+
 # ───────────────────────── WiX resolver ─────────────────────────────────
 function Resolve-WixExe {
-  if ($cfg.WIX_EXE) {
-    $p = Resolve-AbsPath $cfg.WIX_EXE
+  if ($script:cfg.WIX_EXE) {
+    $p = Resolve-AbsPath $script:cfg.WIX_EXE
     if (Test-Path $p) { return $p }
   }
   $cmd = Get-Command wix -ErrorAction SilentlyContinue
@@ -393,6 +602,146 @@ function New-WixFilesFragment {
   [System.IO.File]::WriteAllText($OutPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 }
 
+# ------------------------- MSIX Helpers ------------------------------------------
+function Ensure-FourPartVersion([string]$v) {
+  # MSIX requires A.B.C.D ; you pass 0.1.18 -> produce 0.1.18.0
+  $parts = $v.Split('.')
+  while ($parts.Count -lt 4) { $parts += '0' }
+  return ($parts[0..3] -join '.')
+}
+
+function Resolve-AppCertKit {
+  $cands = @(
+    "$env:ProgramFiles (x86)\Windows Kits\10\App Certification Kit\appcert.exe",
+    "$env:ProgramFiles\Windows Kits\10\App Certification Kit\appcert.exe"
+  )
+  foreach ($p in $cands) { if (Test-Path $p) { return $p } }
+  $cmd = Get-Command appcert.exe -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Path }
+  return $null
+}
+
+function Validate-MSIXSignature([string]$msixPath) {
+  $signtool = Resolve-SignTool
+  if (-not $signtool) { Write-Warning "signtool.exe not found; skipping signature verification."; return }
+  Write-Host ">> Verifying MSIX signature"
+  & $signtool verify /pa /v $msixPath | Write-Host
+}
+
+function Run-AppCertificationKit([string]$msixPath) {
+  if ($script:cfg.RUN_APP_CERT_KIT -ne '1') { return }
+  $ack = Resolve-AppCertKit
+  if (-not $ack) { Write-Warning "App Certification Kit (appcert.exe) not found; skipping WACK tests."; return }
+  $out = Join-Path ([System.IO.Path]::GetDirectoryName($msixPath)) "appcert-results.xml"
+  Write-Host ">> Running Windows App Certification Kit"
+  # /reportoutput wants a path; use XML for easy artifacting.
+  & $ack test -packagepath $msixPath -reportoutput $out | Write-Host
+  Write-Host ">> AppCertKit report: $out"
+}
+
+function New-AppInstallerFile([string]$appinstallerPath, [string]$version4, [string]$name, [string]$publisher, [string]$baseUri, [string]$msixFileName) {
+  if ([string]::IsNullOrWhiteSpace($baseUri)) {
+    Write-Warning "APPX_URI_BASE not set; skipping .appinstaller emission."
+    return
+  }
+  $xml = @"
+<?xml version="1.0" encoding="utf-8"?>
+<AppInstaller
+    xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+    Uri="$baseUri/$([System.IO.Path]::GetFileName($appinstallerPath))"
+    Version="$version4">
+  <MainPackage
+      Name="$name"
+      Publisher="$publisher"
+      Version="$version4"
+      Uri="$baseUri/$msixFileName" />
+  <UpdateSettings>
+    <OnLaunch HoursBetweenUpdateChecks="24"/>
+  </UpdateSettings>
+</AppInstaller>
+"@
+  $dir = Split-Path $appinstallerPath -Parent
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
+  Set-Content -LiteralPath $appinstallerPath -Encoding UTF8 -Value $xml
+  Write-Host ">> AppInstaller created: $appinstallerPath"
+}
+
+function Ensure-Dir([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) {
+    New-Item -ItemType Directory -Force -Path $path | Out-Null
+  }
+}
+
+# Minimal PNG generator for placeholders (solid bg + centered text)
+function New-PlaceholderPng {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][object]$Width,
+    [Parameter(Mandatory)][object]$Height,
+    [string]$Bg = '#2D2D2D',
+    [string]$Fg = '#FFFFFF',
+    [string]$Text = 'Omni'
+  )
+
+  # Coerce to scalar ints (handles arrays/strings)
+  $w = [int](@($Width)[0])
+  $h = [int](@($Height)[0])
+  if ($w -le 0 -or $h -le 0) { throw "Invalid image size: ${w}x${h}" }
+
+  # Float math everywhere division happens
+  $area     = [double]$w * [double]$h
+  $fontSize = [int]([Math]::Max(([Math]::Sqrt($area) / 6.0), 10.0))
+
+  Add-Type -AssemblyName System.Drawing
+  $bmp = New-Object System.Drawing.Bitmap($w, $h)
+  $g   = [System.Drawing.Graphics]::FromImage($bmp)
+  try {
+    $bgc = [System.Drawing.ColorTranslator]::FromHtml($Bg)
+    $fgc = [System.Drawing.ColorTranslator]::FromHtml($Fg)
+    $g.Clear($bgc)
+
+    $font = New-Object System.Drawing.Font('Segoe UI', $fontSize, [System.Drawing.FontStyle]::Bold)
+    $sz   = $g.MeasureString($Text, $font)
+
+    # Force floats for the centers (avoid accidental array ops)
+    $cx = [float]( ( [double]$w - [double]$sz.Width  ) / 2.0 )
+    $cy = [float]( ( [double]$h - [double]$sz.Height ) / 2.0 )
+    $pt = New-Object System.Drawing.PointF($cx, $cy)
+
+    Ensure-Dir (Split-Path -Parent $Path)
+    $brush = New-Object System.Drawing.SolidBrush($fgc)
+    $g.DrawString($Text, $font, $brush, $pt)
+    $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+  }
+  finally {
+    $g.Dispose(); $bmp.Dispose()
+  }
+}
+
+# Ensure the MSIX Assets folder + a sane set of default images.
+function Ensure-MsixAssets([string]$assetsDir) {
+  Ensure-Dir $assetsDir
+
+  $required = @(
+    @{ name='Square44x44Logo.png';    w=44;  h=44  },
+    @{ name='Square150x150Logo.png';  w=150; h=150 },
+    @{ name='Wide310x150Logo.png';    w=310; h=150 },
+    @{ name='Square310x310Logo.png';  w=310; h=310 },
+    @{ name='StoreLogo.png';          w=50;  h=50  },
+    @{ name='SplashScreen.png';       w=620; h=300 }
+  )
+
+  foreach ($r in $required) {
+    $p = Join-Path $assetsDir $r.name
+    if (-not (Test-Path -LiteralPath $p)) {
+      # Force scalars here
+      $w = [int](@($r.w)[0])
+      $h = [int](@($r.h)[0])
+      New-PlaceholderPng -Path $p -Width $w -Height $h -Text 'Omni'
+    }
+  }
+}
+
 # ───────────────────────── Build portable payload (robust) ───────────────────────
 # Find opam
 $opam = Get-OpamExe
@@ -410,7 +759,7 @@ if (-not (Test-Path (Join-Path $OpamRoot 'config'))) {
   & $opam init --root "$OpamRoot" --disable-sandboxing | Out-Host
 }
 
-Write-Host ">> Activating opam switch: $($cfg.SWITCH) (root: $OpamRoot)"
+Write-Host ">> Activating opam switch: $($script:cfg.SWITCH) (root: $OpamRoot)"
 # Ensure both repos present on Windows
 try {
   $reposShort = & $opam repo list --root "$OpamRoot" --short 2>$null
@@ -432,8 +781,8 @@ try {
 # Create switch if missing, with explicit package set
 try {
   $have = & $opam switch list --root "$OpamRoot" --short 2>$null
-  if (-not (($have -split '\r?\n') -contains $cfg.SWITCH)) {
-    Write-Host "  -> creating opam switch $($cfg.SWITCH)"
+  if (-not (($have -split '\r?\n') -contains $script:cfg.SWITCH)) {
+    Write-Host "  -> creating opam switch $($script:cfg.SWITCH)"
     $candidates = @(
       'ocaml-compiler.5.3.0,system-mingw,ocaml-env-mingw64,mingw-w64-shims',
       'ocaml-compiler.5.2.1,system-mingw,ocaml-env-mingw64,mingw-w64-shims',
@@ -442,14 +791,14 @@ try {
     $created = $false
     foreach ($spec in $candidates) {
       Write-Host "     - trying: $spec"
-      & $opam switch create --root "$OpamRoot" $cfg.SWITCH --packages $spec | Out-Host
-      $envLines = & $opam env --root "$OpamRoot" --switch $cfg.SWITCH --set-switch
-      $switchBin = Ensure-OpamSwitchBinReady -OpamExe $opam -OpamRoot $OpamRoot -Switch $cfg.SWITCH
+      & $opam switch create --root "$OpamRoot" $script:cfg.SWITCH --packages $spec | Out-Host
+      $envLines = & $opam env --root "$OpamRoot" --switch $script:cfg.SWITCH --set-switch
+      $switchBin = Ensure-OpamSwitchBinReady -OpamExe $opam -OpamRoot $OpamRoot -Switch $script:cfg.SWITCH
       Write-Host ">> switch bin ready: $switchBin"
       if ($LASTEXITCODE -eq 0) { $created = $true; break }
     }
     if (-not $created) {
-      throw "Could not create switch '$($cfg.SWITCH)' with any candidate package set."
+      throw "Could not create switch '$($script:cfg.SWITCH)' with any candidate package set."
     }
   }
 } catch {
@@ -457,7 +806,7 @@ try {
 }
 
 # Apply env for THIS process only
-$envLines = & $opam env --root "$OpamRoot" --switch $cfg.SWITCH --set-switch
+$envLines = & $opam env --root "$OpamRoot" --switch $script:cfg.SWITCH --set-switch
 $envLines -split '\r?\n' | ForEach-Object { if ($_ -match '\S') { Invoke-Expression $_ } }
 
 # Sanity print
@@ -471,11 +820,11 @@ try {
 Write-Host ">> Building dune + deps"
 $oldPath = $env:Path
 try {
-  $switchBin = (& $opam var --root "$OpamRoot" --switch $cfg.SWITCH bin).Trim()
+  $switchBin = (& $opam var --root "$OpamRoot" --switch $script:cfg.SWITCH bin).Trim()
   if (-not (Test-Path $switchBin)) { throw "opam var bin returned '$switchBin' which doesn't exist." }
 
   # Ensure dune + build deps are present in the switch
-  Ensure-OpamPackages -OpamExe $opam -OpamRoot $OpamRoot -Switch $cfg.SWITCH
+  Ensure-OpamPackages -OpamExe $opam -OpamRoot $OpamRoot -Switch $script:cfg.SWITCH -SkipUpdate
 
   $env:Path = "$switchBin;$env:Path"
   Write-Host ">> PATH (temp prepend): $switchBin"
@@ -489,17 +838,15 @@ try {
 
   $built = $null
   # We build the app with dune; opam is used only for deps.
-  Write-Host ">> Building with dune ($($cfg.BUILD_PROFILE))"
-  & $dune build --profile $cfg.BUILD_PROFILE bin/omni.exe
-  $candidate = Join-Path $RepoRoot "_build\default\bin\omni.exe"
-  if (Test-Path $candidate) { $built = $candidate }
+  Write-Host ">> Building with dune ($($script:cfg.BUILD_PROFILE))"
+  & $dune build --profile $script:cfg.BUILD_PROFILE bin/omni.exe
 
-  if (-not $built) {
-    Write-Host ">> Building with dune ($($cfg.BUILD_PROFILE))"
-    & $dune build --profile $cfg.BUILD_PROFILE bin/omni.exe
-    $candidate = Join-Path $RepoRoot "_build\default\bin\omni.exe"
-    if (Test-Path $candidate) { $built = $candidate }
+  $candidate = Join-Path $RepoRoot "_build\default\bin\omni.exe"
+  if (-not (Test-Path $candidate)) {
+    # Only retry if the first build failed
+    & $dune build --profile $script:cfg.BUILD_PROFILE bin/omni.exe
   }
+  $built = if (Test-Path $candidate) { $candidate } else { $null }
 
   if (-not $built) {
     # last probe: anything resembling omni-irc-client in switch bin
@@ -514,13 +861,13 @@ try {
   Write-Host ">> Build OK: $built"
 
   # ---------- Stage output ----------
-  Write-Host ">> Staging output -> $(Resolve-AbsPath $cfg.OUT_DIR)"
+  Write-Host ">> Staging output -> $(Resolve-AbsPath $script:cfg.OUT_DIR)"
   Remove-Item -Recurse -Force $OutDirAbs -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $OutDirAbs | Out-Null
-  Copy-Item $built (Join-Path $OutDirAbs $cfg.EXE_NAME)
+  Copy-Item $built (Join-Path $OutDirAbs $script:cfg.EXE_NAME)
 
   # Dependency harvest via ntldd (MSYS2 UCRT64)
-  $ntlddRoot = if ($cfg.MSYS2) { $cfg.MSYS2 } else { if ($env:MSYS2) { $env:MSYS2 } else { 'C:\msys64' } }
+  $ntlddRoot = if ($script:cfg.MSYS2) { $script:cfg.MSYS2 } else { if ($env:MSYS2) { $env:MSYS2 } else { 'C:\msys64' } }
   $ntldd = Join-Path $ntlddRoot "ucrt64\bin\ntldd.exe"
   if (Test-Path $ntldd) {
     Write-Host ">> Harvesting DLLs via ntldd"
@@ -539,7 +886,7 @@ try {
   Copy-Item (Join-Path $RepoRoot "LICENSE*") $OutDirAbs -ErrorAction SilentlyContinue
 
   # Sign EXE + harvested DLLs (optional)
-  if ($cfg.WIN_SIGN -eq '1') {
+  if ($script:cfg.WIN_SIGN -eq '1') {
     Write-Host ">> Code signing enabled; signing staged binaries"
     $targets = Get-ChildItem -Path $OutDirAbs -File -Include *.exe,*.dll -Recurse
     foreach ($t in $targets) { Sign-File $t.FullName }
@@ -551,7 +898,7 @@ try {
   if (Test-Path $ZipAbs) { Remove-Item $ZipAbs -Force }
   Compress-Archive -Path (Join-Path $OutDirAbs '*') -DestinationPath $ZipAbs
   Write-Host ">> ZIP created: $ZipAbs"
-  Write-Host "   Unzip and run: $OutDirAbs\$($cfg.EXE_NAME)"
+  Write-Host "   Unzip and run: $OutDirAbs\$($script:cfg.EXE_NAME)"
 
   # ---------- MSI build ----------
   $wixExe = Resolve-WixExe
@@ -586,7 +933,7 @@ Skipping MSI build.
       -d InstallDir=$OutDirAbs | Write-Host
 
   # Sign MSI (optional)
-  if ($cfg.WIN_SIGN -eq '1') {
+  if ($script:cfg.WIN_SIGN -eq '1') {
     Write-Host ">> Signing MSI"
     Sign-File $MsiAbs
   }
@@ -596,4 +943,133 @@ Skipping MSI build.
 finally {
   $env:Path = $oldPath
   Write-Host ">> PATH restored"
+}
+
+# ---------- MSIX build ----------
+if ([string]::IsNullOrEmpty($script:cfg.MSIX_PATH)) {
+  $script:cfg.MSIX_PATH = ".dist\omni-irc-client-$version-$($script:cfg.PLATFORM)-$Arch.msix"
+}
+$MsixAbs  = Resolve-AbsPath $script:cfg.MSIX_PATH
+$version4 = Ensure-FourPartVersion $version
+
+function Step([string]$name, [scriptblock]$action) {
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  Write-Host ">> $name ..."
+  try {
+    & $action
+    Write-Host ("   OK [{0:n1}s]" -f ($sw.Elapsed.TotalSeconds))
+  } catch {
+    Write-Host ("   FAIL [{0:n1}s]" -f ($sw.Elapsed.TotalSeconds))
+    throw
+  }
+}
+
+$makeappx = Resolve-MakeAppx
+if (-not $makeappx) {
+  Write-Warning @"
+Windows SDK MakeAppx.exe not found.
+Install 'Windows 10/11 SDK' and re-run.
+Skipping MSIX build.
+"@
+} else {
+  Write-Host ">> MakeAppx: $makeappx"
+
+  # ---- MSIX build: safer copy that avoids recursion when OUT_DIR=.dist ----
+  $pkgTemp     = Join-Path $RepoRoot ".dist\msix\payload"
+  $manifestSrc = Resolve-AbsPath $script:cfg.APPX_MANIFEST
+  $assetsSrc   = Join-Path (Split-Path $manifestSrc -Parent) "Assets"
+
+  # Clean payload
+  Remove-Item -LiteralPath $pkgTemp -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path $pkgTemp | Out-Null
+
+  # Copy ONLY payload from OUT_DIR, excluding msix/wix + non-runtime files
+  $excludeDirNames = @('msix','wix')
+  $excludeExt      = @('.zip','.msi','.msix','.appinstaller','.wixpdb')
+
+  Get-ChildItem -LiteralPath $OutDirAbs -Force | ForEach-Object {
+    if ($_.PSIsContainer) {
+      if ($excludeDirNames -contains $_.Name.ToLower()) { return }
+      Copy-Item -LiteralPath $_.FullName `
+                -Destination (Join-Path $pkgTemp $_.Name) `
+                -Recurse -Force -ErrorAction Stop
+    } else {
+      if ($excludeExt -contains $_.Extension.ToLower()) { return }
+      Copy-Item -LiteralPath $_.FullName -Destination $pkgTemp -Force -ErrorAction Stop
+    }
+  }
+
+  $manifestDst = Join-Path $pkgTemp "AppxManifest.xml"
+  $assetsDst   = Join-Path $pkgTemp "Assets"
+
+  Step "Copy manifest" {
+    Copy-Item -Path $manifestSrc -Destination $manifestDst -Force -ErrorAction Stop
+  }
+
+  Step "Create + copy Assets" {
+    Ensure-Dir $assetsDst
+    Copy-Item -Path (Join-Path $assetsSrc '*') -Destination $assetsDst -Recurse -Force -ErrorAction Stop
+    $n = (Get-ChildItem -Path $assetsDst -File | Measure-Object).Count
+    Write-Host "   Assets copied: $n"
+  }
+
+  Step "Stamp manifest identity + version" {
+    $sdkVer = Get-WinSdkVersionFromMakeAppx $makeappx
+    Update-AppxManifest -ManifestPath $manifestDst `
+      -Version $version `
+      -IdentityName $script:cfg.APPX_IDENTITY `
+      -Publisher $script:cfg.APPX_PUBLISHER `
+      -DisplayName $script:cfg.APPX_DISPLAY_NAME `
+      -PublisherDisplayName $script:cfg.APPX_PUBLISHER_DISPLAY_NAME `
+      -SdkVersion $sdkVer
+  }
+
+  Step "Prepare MSIX output path" {
+    $msixDir = Split-Path $MsixAbs -Parent
+    if (-not (Test-Path $msixDir)) { New-Item -ItemType Directory -Force $msixDir | Out-Null }
+    if (Test-Path $MsixAbs) { Remove-Item $MsixAbs -Force -ErrorAction Stop }
+  }
+
+  Write-Host ">> Packing MSIX (verbose) -> $MsixAbs"
+  & $makeappx pack /v /o /h SHA256 /d $pkgTemp /p $MsixAbs 2>&1 | Out-Host
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $MsixAbs)) {
+    throw "MakeAppx failed with code $LASTEXITCODE. See log above."
+  }
+  Write-Host ">> MSIX packed: $MsixAbs"
+
+  # Distribution flow (unchanged, just runs after pack/validate)
+  $target = ($script:cfg.DIST_TARGET ?? 'store').ToLowerInvariant()
+  switch ($target) {
+    'store' {
+      Write-Host ">> DIST_TARGET=store (no local signing required)."
+      Run-AppCertificationKit -msixPath $MsixAbs
+    }
+    'sideload' {
+      Write-Host ">> DIST_TARGET=sideload (will sign MSIX locally)."
+      if ($script:cfg.WIN_SIGN -ne '1') {
+        Write-Warning "WIN_SIGN=0; sideload installs will fail. Enable signing or switch DIST_TARGET to 'store'."
+      } else {
+        Write-Host ">> Signing MSIX for sideload"
+        Sign-File $MsixAbs
+        Validate-MSIXSignature $MsixAbs
+      }
+      if ($script:cfg.APPX_URI_BASE) {
+        $appinstallerAbs = if ($script:cfg.APPINSTALLER_PATH) { Resolve-AbsPath $script:cfg.APPINSTALLER_PATH }
+                           else { Join-Path (Split-Path $MsixAbs -Parent) $script:cfg.APPINSTALLER_NAME }
+        New-AppInstallerFile -appinstallerPath $appinstallerAbs `
+                             -version4 $version4 `
+                             -name $script:cfg.APPX_IDENTITY `
+                             -publisher $script:cfg.APPX_PUBLISHER `
+                             -baseUri $script:cfg.APPX_URI_BASE `
+                             -msixFileName (Split-Path $MsixAbs -Leaf)
+      }
+      Run-AppCertificationKit -msixPath $MsixAbs
+    }
+    default {
+      Write-Warning "Unknown DIST_TARGET '$target'. Treating as 'store'."
+      Run-AppCertificationKit -msixPath $MsixAbs
+    }
+  }
+
+  Write-Host ">> MSIX created: $MsixAbs"
 }
